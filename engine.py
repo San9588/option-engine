@@ -30,7 +30,7 @@ import time
 import asyncio
 import itertools
 from datetime import datetime, time as datetime_time, timedelta
-
+from gateway_handlers import handle_db_query
 import signal
 import sqlite3
 import threading
@@ -1007,17 +1007,22 @@ async def on_shutdown(app):
 
 
 # ==================== CREATE APP ====================
-def create_app():
+async def create_app():
     app = web.Application()
-    app.router.add_get("/api/health",          handle_health)
-    app.router.add_get("/api/spot/{symbol}",   handle_spot)
-    app.router.add_get("/api/latest/{symbol}", handle_latest)
-    app.router.add_get("/ws",                  ws_handler)
+    
+    # Background collector task ko start karne ke liye signals jodhna
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
+    
+    # Aapke purane routes
+    app.router.add_get("/ws", ws_handler)
+    app.router.add_get("/api/latest/{symbol}", handle_latest)
+    app.router.add_get("/api/spot/{symbol}", handle_spot)
+    
+    # NAYA ROUTE: Integrated Gateway Handler
+    app.router.add_post("/query", handle_db_query)
+    
     return app
-
-
 # ==================== SIGNAL HANDLERS ====================
 def emergency_cleanup(signum, frame):
     """
@@ -1055,7 +1060,10 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, emergency_cleanup)
     signal.signal(signal.SIGINT,  emergency_cleanup)
 
-    app = create_app()
+    # create_app() async hai, isliye ise asyncio runner se chalayenge
+    loop = asyncio.get_event_loop()
+    app = loop.run_until_complete(create_app())
+    
     try:
         web.run_app(app, host=API_HOST, port=API_PORT, print=None)
     except (KeyboardInterrupt, SystemExit):
