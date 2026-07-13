@@ -127,10 +127,10 @@ HEADERS: dict = {
 
 # Master config — enabled/disabled here, runtime state mutated only for "exp"
 TARGETS_CONFIG: dict = {
-    "NIFTY":      {"enabled": ENABLE_NIFTY,      "exchange": "NSE", "seg": 0, "sid": 13,     "step": 50.0,  "ftime": 1, "exp": -1},
-    "BANKNIFTY":  {"enabled": ENABLE_BANKNIFTY,  "exchange": "NSE", "seg": 0, "sid": 25,     "step": 100.0, "ftime": 1, "exp": -1},
-    "SENSEX":     {"enabled": ENABLE_BSE,        "exchange": "BSE", "seg": 1, "sid": 1,      "step": 100.0, "ftime": 1, "exp": -1},
-    "CRUDEOIL":   {"enabled": ENABLE_CRUDEOIL,   "exchange": "MCX", "seg": 5, "sid": 520702, "step": 50.0,  "ftime": 3, "exp": -1},
+    "NIFTY":      {"enabled": ENABLE_NIFTY,      "exchange": "NSE", "seg": 0, "sid": 13,     "step": 50.0,  "ftime": 1, "exp": -1, "scale_div": 1000.0},
+    "BANKNIFTY":  {"enabled": ENABLE_BANKNIFTY,  "exchange": "NSE", "seg": 0, "sid": 25,     "step": 100.0, "ftime": 1, "exp": -1, "scale_div": 1000.0},
+    "SENSEX":     {"enabled": ENABLE_BSE,        "exchange": "BSE", "seg": 1, "sid": 1,      "step": 100.0, "ftime": 1, "exp": -1, "scale_div": 1000.0},
+    "CRUDEOIL":   {"enabled": ENABLE_CRUDEOIL,   "exchange": "MCX", "seg": 5, "sid": 520702, "step": 50.0,  "ftime": 3, "exp": -1, "scale_div": 100.0},
 }
 
 NEXT_FETCH_TIME: dict = {symbol: 0.0 for symbol in TARGETS_CONFIG}
@@ -564,7 +564,8 @@ def _compute_tick_rows(symbol: str, config: dict, payload_data: dict):
         strikes, pe_vols, pe_ois, pe_chngs, atm_strike, step_size, is_ce=False
     )
 
-    scale     = 1.0 / 100_000.0
+    # Symbol ke hissab se fixed configuration divisor uthana (Multiplier banana)
+    scale = 1.0 / config.get("scale_div", 1000.0)
     ce_oi_s   = np.round(ce_ois   * scale, 2)
     ce_chng_s = np.round(ce_chngs * scale, 2)
     ce_vol_s  = np.round(ce_vols  * scale, 2)
