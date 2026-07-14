@@ -13,10 +13,13 @@ interface OptionRow {
   lot_size: number;
   ce_oi: number;
   ce_oi_short: number;
+  ce_oi_unit: string;
   ce_chng: number;
   ce_chng_short: number;
+  ce_chng_unit: string;
   ce_vol: number;
   ce_vol_short: number;
+  ce_vol_unit: string;
   ce_ltp: number;
   ce_iv: number;
   ce_delta: number;
@@ -25,10 +28,13 @@ interface OptionRow {
   ce_chng_pct: number;
   pe_oi: number;
   pe_oi_short: number;
+  pe_oi_unit: string;
   pe_chng: number;
   pe_chng_short: number;
+  pe_chng_unit: string;
   pe_vol: number;
   pe_vol_short: number;
+  pe_vol_unit: string;
   pe_ltp: number;
   pe_iv: number;
   pe_delta: number;
@@ -46,6 +52,7 @@ interface ColumnConfig {
   shortLabel: string;
   dataKey: keyof OptionRow;
   pctKey?: keyof OptionRow;
+  unitKey?: keyof OptionRow; // K/M/B suffix for this cell
   secondaryKey?: keyof OptionRow; // For combined cells like IV+Delta
   rankIndex?: number;
   visible: boolean;
@@ -63,9 +70,9 @@ const STORAGE_KEY = "option_chain_settings";
 
 // ==================== COLUMN DEFINITIONS ====================
 const DEFAULT_CE_COLUMNS: ColumnConfig[] = [
-  { id: "ce_vol", label: "Volume", shortLabel: "Vol", dataKey: "ce_vol_short", pctKey: "ce_vol_pct", rankIndex: 0, visible: true, width: 80 },
-  { id: "ce_oi", label: "Open Interest", shortLabel: "OI", dataKey: "ce_oi_short", pctKey: "ce_oi_pct", rankIndex: 1, visible: true, width: 80 },
-  { id: "ce_chng", label: "OI Change", shortLabel: "Chng", dataKey: "ce_chng_short", pctKey: "ce_chng_pct", rankIndex: 2, visible: true, width: 80 },
+  { id: "ce_vol", label: "Volume", shortLabel: "Vol", dataKey: "ce_vol_short", pctKey: "ce_vol_pct", unitKey: "ce_vol_unit", rankIndex: 0, visible: true, width: 80 },
+  { id: "ce_oi", label: "Open Interest", shortLabel: "OI", dataKey: "ce_oi_short", pctKey: "ce_oi_pct", unitKey: "ce_oi_unit", rankIndex: 1, visible: true, width: 80 },
+  { id: "ce_chng", label: "OI Change", shortLabel: "Chng", dataKey: "ce_chng_short", pctKey: "ce_chng_pct", unitKey: "ce_chng_unit", rankIndex: 2, visible: true, width: 80 },
   { id: "ce_ltp", label: "LTP", shortLabel: "LTP", dataKey: "ce_ltp", visible: true, width: 70 },
   { id: "ce_iv_delta", label: "IV / Delta", shortLabel: "IV/Δ", dataKey: "ce_iv", secondaryKey: "ce_delta", visible: true, width: 70 },
 ];
@@ -73,15 +80,44 @@ const DEFAULT_CE_COLUMNS: ColumnConfig[] = [
 const DEFAULT_PE_COLUMNS: ColumnConfig[] = [
   { id: "pe_iv_delta", label: "IV / Delta", shortLabel: "IV/Δ", dataKey: "pe_iv", secondaryKey: "pe_delta", visible: true, width: 70 },
   { id: "pe_ltp", label: "LTP", shortLabel: "LTP", dataKey: "pe_ltp", visible: true, width: 70 },
-  { id: "pe_chng", label: "OI Change", shortLabel: "Chng", dataKey: "pe_chng_short", pctKey: "pe_chng_pct", rankIndex: 2, visible: true, width: 80 },
-  { id: "pe_oi", label: "Open Interest", shortLabel: "OI", dataKey: "pe_oi_short", pctKey: "pe_oi_pct", rankIndex: 1, visible: true, width: 80 },
-  { id: "pe_vol", label: "Volume", shortLabel: "Vol", dataKey: "pe_vol_short", pctKey: "pe_vol_pct", rankIndex: 0, visible: true, width: 80 },
+  { id: "pe_chng", label: "OI Change", shortLabel: "Chng", dataKey: "pe_chng_short", pctKey: "pe_chng_pct", unitKey: "pe_chng_unit", rankIndex: 2, visible: true, width: 80 },
+  { id: "pe_oi", label: "Open Interest", shortLabel: "OI", dataKey: "pe_oi_short", pctKey: "pe_oi_pct", unitKey: "pe_oi_unit", rankIndex: 1, visible: true, width: 80 },
+  { id: "pe_vol", label: "Volume", shortLabel: "Vol", dataKey: "pe_vol_short", pctKey: "pe_vol_pct", unitKey: "pe_vol_unit", rankIndex: 0, visible: true, width: 80 },
 ];
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOIL"];
 
+// ==================== HELPER: Decode meta_pack (mirrors engine.py _pack_meta) ====================
+const UNIT_SUFFIX = ["", "K", "M", "B"];
+
+function shortValue(raw: number, unitCode: number): number {
+  return Math.round((raw / Math.pow(1000, unitCode)) * 100) / 100;
+}
+
 // ==================== HELPER: Parse row array to object ====================
 function parseRowToObject(row: number[]): OptionRow {
+  const ce_oi = row[6];
+  const ce_chng = row[7];
+  const ce_vol = row[8];
+  const pe_oi = row[15];
+  const pe_chng = row[16];
+  const pe_vol = row[17];
+  const meta = row[25];
+
+  const ce_oi_u   = meta & 0b11;
+  const ce_chng_u = (meta >> 2) & 0b11;
+  const ce_vol_u  = (meta >> 4) & 0b11;
+  const pe_oi_u   = (meta >> 6) & 0b11;
+  const pe_chng_u = (meta >> 8) & 0b11;
+  const pe_vol_u  = (meta >> 10) & 0b11;
+
+  const ce_vol_rank  = (meta >> 12) & 0b11;
+  const ce_oi_rank   = (meta >> 14) & 0b11;
+  const ce_chng_rank = (meta >> 16) & 0b11;
+  const pe_vol_rank  = (meta >> 18) & 0b11;
+  const pe_oi_rank   = (meta >> 20) & 0b11;
+  const pe_chng_rank = (meta >> 22) & 0b11;
+
   return {
     timestamp: String(row[0]),
     spot_price: row[1],
@@ -89,33 +125,40 @@ function parseRowToObject(row: number[]): OptionRow {
     relative_idx: row[3],
     strike: row[4],
     lot_size: row[5],
-    ce_oi: row[6],
-    ce_oi_short: row[7],
-    ce_chng: row[8],
-    ce_chng_short: row[9],
-    ce_vol: row[10],
-    ce_vol_short: row[11],
-    ce_ltp: row[12],
-    ce_iv: row[13],
-    ce_delta: row[14],
-    ce_vol_pct: row[15],
-    ce_oi_pct: row[16],
-    ce_chng_pct: row[17],
-    pe_oi: row[18],
-    pe_oi_short: row[19],
-    pe_chng: row[20],
-    pe_chng_short: row[21],
-    pe_vol: row[22],
-    pe_vol_short: row[23],
-    pe_ltp: row[24],
-    pe_iv: row[25],
-    pe_delta: row[26],
-    pe_vol_pct: row[27],
-    pe_oi_pct: row[28],
-    pe_chng_pct: row[29],
-    gamma: row[30],
-    ce_rank: String(row[31]),
-    pe_rank: String(row[32]),
+    ce_oi,
+    ce_oi_short: shortValue(ce_oi, ce_oi_u),
+    ce_oi_unit: UNIT_SUFFIX[ce_oi_u],
+    ce_chng,
+    ce_chng_short: shortValue(ce_chng, ce_chng_u),
+    ce_chng_unit: UNIT_SUFFIX[ce_chng_u],
+    ce_vol,
+    ce_vol_short: shortValue(ce_vol, ce_vol_u),
+    ce_vol_unit: UNIT_SUFFIX[ce_vol_u],
+    ce_ltp: row[9],
+    ce_iv: row[10],
+    ce_delta: row[11],
+    ce_vol_pct: row[12],
+    ce_oi_pct: row[13],
+    ce_chng_pct: row[14],
+    pe_oi,
+    pe_oi_short: shortValue(pe_oi, pe_oi_u),
+    pe_oi_unit: UNIT_SUFFIX[pe_oi_u],
+    pe_chng,
+    pe_chng_short: shortValue(pe_chng, pe_chng_u),
+    pe_chng_unit: UNIT_SUFFIX[pe_chng_u],
+    pe_vol,
+    pe_vol_short: shortValue(pe_vol, pe_vol_u),
+    pe_vol_unit: UNIT_SUFFIX[pe_vol_u],
+    pe_ltp: row[18],
+    pe_iv: row[19],
+    pe_delta: row[20],
+    pe_vol_pct: row[21],
+    pe_oi_pct: row[22],
+    pe_chng_pct: row[23],
+    gamma: row[24],
+    // Same 3-digit "vol,oi,chng" string format as before -> getRankBg needs zero changes
+    ce_rank: `${ce_vol_rank}${ce_oi_rank}${ce_chng_rank}`,
+    pe_rank: `${pe_vol_rank}${pe_oi_rank}${pe_chng_rank}`,
   };
 }
 
@@ -301,6 +344,7 @@ export default function OptionChainPage() {
   const renderCell = (row: OptionRow, col: ColumnConfig, side: "ce" | "pe") => {
     const value = row[col.dataKey];
     const pctValue = col.pctKey ? row[col.pctKey] : null;
+    const unitSuffix = col.unitKey ? (row[col.unitKey] as string) : "";
     const secondaryValue = col.secondaryKey ? row[col.secondaryKey] : null;
     const rankStr = side === "ce" ? row.ce_rank : row.pe_rank;
     const rankBg = col.rankIndex !== undefined ? getRankBg(rankStr, col.rankIndex, side) : "";
@@ -354,7 +398,7 @@ export default function OptionChainPage() {
               {typeof pctValue === "number" ? pctValue.toFixed(1) : pctValue}%
             </span>
             <span className="text-sm font-medium">
-              {typeof value === "number" ? value.toFixed(2) : value}
+              {typeof value === "number" ? value.toFixed(2) : value}{unitSuffix}
             </span>
           </div>
         </td>
