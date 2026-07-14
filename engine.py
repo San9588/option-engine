@@ -136,15 +136,24 @@ TARGETS_CONFIG: dict = {
 NEXT_FETCH_TIME: dict = {symbol: 0.0 for symbol in TARGETS_CONFIG}
 
 # ==================== COLUMN DEFINITIONS ====================
+# meta_pack (int32) replaces 6 short-value columns + ce_rank/pe_rank (33 -> 26 cols).
+# Bit layout (see _pack_meta / _unpack_meta / UNIT_SUFFIX below):
+#   bits 0-1   ce_oi_unit      bits 12-13 ce_vol_rank
+#   bits 2-3   ce_chng_unit    bits 14-15 ce_oi_rank
+#   bits 4-5   ce_vol_unit     bits 16-17 ce_chng_rank
+#   bits 6-7   pe_oi_unit      bits 18-19 pe_vol_rank
+#   bits 8-9   pe_chng_unit    bits 20-21 pe_oi_rank
+#   bits 10-11 pe_vol_unit     bits 22-23 pe_chng_rank
+#   unit codes: 0=raw(""), 1=K, 2=M, 3=B   |   ranks: 0-3 (same meaning as before)
 COLUMNS = (
     "timestamp", "spot_price", "spot_chng", "relative_idx", "strike", "lot_size",
-    "ce_oi", "ce_oi_short", "ce_chng", "ce_chng_short", "ce_vol", "ce_vol_short",
+    "ce_oi", "ce_chng", "ce_vol",
     "ce_ltp", "ce_iv", "ce_delta",
     "ce_vol_pct", "ce_oi_pct", "ce_chng_pct",
-    "pe_oi", "pe_oi_short", "pe_chng", "pe_chng_short", "pe_vol", "pe_vol_short",
+    "pe_oi", "pe_chng", "pe_vol",
     "pe_ltp", "pe_iv", "pe_delta",
     "pe_vol_pct", "pe_oi_pct", "pe_chng_pct",
-    "gamma", "ce_rank", "pe_rank",
+    "gamma", "meta_pack",
 )
 COLUMNS_STR  = ", ".join(COLUMNS)
 PLACEHOLDERS = ", ".join(["?"] * len(COLUMNS))
@@ -214,11 +223,8 @@ def init_database():
                 strike         INTEGER,
                 lot_size       INTEGER,
                 ce_oi          INTEGER,
-                ce_oi_short    REAL,
                 ce_chng        INTEGER,
-                ce_chng_short  REAL,
                 ce_vol         INTEGER,
-                ce_vol_short   REAL,
                 ce_ltp         REAL,
                 ce_iv          REAL,
                 ce_delta       REAL,
@@ -226,11 +232,8 @@ def init_database():
                 ce_oi_pct      REAL,
                 ce_chng_pct    REAL,
                 pe_oi          INTEGER,
-                pe_oi_short    REAL,
                 pe_chng        INTEGER,
-                pe_chng_short  REAL,
                 pe_vol         INTEGER,
-                pe_vol_short   REAL,
                 pe_ltp         REAL,
                 pe_iv          REAL,
                 pe_delta       REAL,
@@ -238,8 +241,7 @@ def init_database():
                 pe_oi_pct      REAL,
                 pe_chng_pct    REAL,
                 gamma          REAL,
-                ce_rank        TEXT,
-                pe_rank        TEXT
+                meta_pack      INTEGER
             )
         """)
         conn.execute(
@@ -410,13 +412,78 @@ def next_aligned_time(ftime_minutes: int) -> float:
     return now + (interval - (now % interval))
 
 
+# ==================== COMPACT META PACKING (units + ranks in 1 column) ====================
+UNIT_SUFFIX = ("", "K", "M", "B")  # index = unit_code
+
+
+def _magnitude_units_numpy(arr):
+    """
+    Vectorized (whole-array, no per-element branching) K/M/B magnitude split.
+    Returns (mantissa: float64 array, unit_code: int8 array [0..3]).
+    """
+    safe_abs   = np.abs(arr).astype(np.float64) + 1e-9
+    power      = np.floor(np.log10(safe_abs) / 3.0) * 3.0
+    power      = np.clip(power, 0, 9)
+    mantissa   = np.round(arr / (10.0 ** power), 2)
+    unit_code  = (power / 3.0).astype(np.int8)
+    return mantissa, unit_code
+
+
+def _pack_meta(ce_oi_u, ce_chng_u, ce_vol_u, pe_oi_u, pe_chng_u, pe_vol_u,
+               ce_v_rank, ce_o_rank, ce_c_rank, pe_v_rank, pe_o_rank, pe_c_rank):
+    """Bit-pack 6 unit-codes (2 bits each) + 6 sub-ranks (2 bits each) into one int32 array."""
+    return (
+        ce_oi_u.astype(np.int32)
+        | (ce_chng_u.astype(np.int32) << 2)
+        | (ce_vol_u.astype(np.int32) << 4)
+        | (pe_oi_u.astype(np.int32) << 6)
+        | (pe_chng_u.astype(np.int32) << 8)
+        | (pe_vol_u.astype(np.int32) << 10)
+        | (ce_v_rank.astype(np.int32) << 12)
+        | (ce_o_rank.astype(np.int32) << 14)
+        | (ce_c_rank.astype(np.int32) << 16)
+        | (pe_v_rank.astype(np.int32) << 18)
+        | (pe_o_rank.astype(np.int32) << 20)
+        | (pe_c_rank.astype(np.int32) << 22)
+    ).astype(np.int32)
+
+
+def _unpack_meta(pack: int) -> dict:
+    """Reverse of _pack_meta — used at read/query/frontend time. Pure bitwise, no if-else."""
+    return {
+        "ce_oi_unit":   UNIT_SUFFIX[pack & 0b11],
+        "ce_chng_unit": UNIT_SUFFIX[(pack >> 2) & 0b11],
+        "ce_vol_unit":  UNIT_SUFFIX[(pack >> 4) & 0b11],
+        "pe_oi_unit":   UNIT_SUFFIX[(pack >> 6) & 0b11],
+        "pe_chng_unit": UNIT_SUFFIX[(pack >> 8) & 0b11],
+        "pe_vol_unit":  UNIT_SUFFIX[(pack >> 10) & 0b11],
+        "ce_vol_rank":  (pack >> 12) & 0b11,
+        "ce_oi_rank":   (pack >> 14) & 0b11,
+        "ce_chng_rank": (pack >> 16) & 0b11,
+        "pe_vol_rank":  (pack >> 18) & 0b11,
+        "pe_oi_rank":   (pack >> 20) & 0b11,
+        "pe_chng_rank": (pack >> 22) & 0b11,
+    }
+
+
+def short_value(raw: float, unit_code: int) -> str:
+    """
+    Reconstructs the K/M/B display string from the RAW column + its unit_code
+    (no separate 'short' column needed - raw values are already stored as-is).
+    Example: short_value(1256000, 2) -> "1.26M"
+    """
+    mantissa = round(raw / (1000.0 ** unit_code), 2)
+    return f"{mantissa}{UNIT_SUFFIX[unit_code]}"
+
+
 # ==================== NUMPY VECTORIZED PROCESSING ====================
 def calculate_ranks_and_percentages_numpy(
     strikes, vols, ois, chngs, atm_strike, step_size, is_ce
 ):
     n = len(strikes)
     if n == 0:
-        return np.array([], dtype="U3"), np.zeros(0), np.zeros(0), np.zeros(0)
+        z8 = np.zeros(0, dtype=np.int8)
+        return z8, z8, z8, np.zeros(0), np.zeros(0), np.zeros(0)
 
     offsets      = (strikes - atm_strike) / step_size
     window_mask  = (offsets >= -2) & (offsets <= 15) if is_ce else (offsets >= -15) & (offsets <= 2)
@@ -466,10 +533,7 @@ def calculate_ranks_and_percentages_numpy(
     o_ranks = evaluate_metric_ranks(ois,   max_oi,   window_mask, deep_itm)
     c_ranks = evaluate_metric_ranks(chngs, max_chng, window_mask, deep_itm)
 
-    numeric_ranks    = (v_ranks * 100) + (o_ranks * 10) + c_ranks
-    ranks_str_vector = np.char.zfill(numeric_ranks.astype(str), 3)
-
-    return ranks_str_vector, vol_pcts, oi_pcts, chng_pcts
+    return v_ranks, o_ranks, c_ranks, vol_pcts, oi_pcts, chng_pcts
 
 
 # ==================== DATA PROCESSING ====================
@@ -557,21 +621,25 @@ def _compute_tick_rows(symbol: str, config: dict, payload_data: dict):
         pe_ivs[idx]    = pe_inner.get("iv",      0.0)
         pe_deltas[idx] = pe_geeks.get("delta",   0.0)
 
-    ce_ranks, ce_vol_pct, ce_oi_pct, ce_chng_pct = calculate_ranks_and_percentages_numpy(
+    ce_v_rank, ce_o_rank, ce_c_rank, ce_vol_pct, ce_oi_pct, ce_chng_pct = calculate_ranks_and_percentages_numpy(
         strikes, ce_vols, ce_ois, ce_chngs, atm_strike, step_size, is_ce=True
     )
-    pe_ranks, pe_vol_pct, pe_oi_pct, pe_chng_pct = calculate_ranks_and_percentages_numpy(
+    pe_v_rank, pe_o_rank, pe_c_rank, pe_vol_pct, pe_oi_pct, pe_chng_pct = calculate_ranks_and_percentages_numpy(
         strikes, pe_vols, pe_ois, pe_chngs, atm_strike, step_size, is_ce=False
     )
 
-    # Symbol ke hissab se fixed configuration divisor uthana (Multiplier banana)
-    scale = 1.0 / config.get("scale_div", 1000.0)
-    ce_oi_s   = np.round(ce_ois   * scale, 2)
-    ce_chng_s = np.round(ce_chngs * scale, 2)
-    ce_vol_s  = np.round(ce_vols  * scale, 2)
-    pe_oi_s   = np.round(pe_ois   * scale, 2)
-    pe_chng_s = np.round(pe_chngs * scale, 2)
-    pe_vol_s  = np.round(pe_vols  * scale, 2)
+    # K/M/B magnitude split - vectorized once per tick (no per-row loop, no if-else)
+    _, ce_oi_u   = _magnitude_units_numpy(ce_ois)
+    _, ce_chng_u = _magnitude_units_numpy(ce_chngs)
+    _, ce_vol_u  = _magnitude_units_numpy(ce_vols)
+    _, pe_oi_u   = _magnitude_units_numpy(pe_ois)
+    _, pe_chng_u = _magnitude_units_numpy(pe_chngs)
+    _, pe_vol_u  = _magnitude_units_numpy(pe_vols)
+
+    meta_pack = _pack_meta(
+        ce_oi_u, ce_chng_u, ce_vol_u, pe_oi_u, pe_chng_u, pe_vol_u,
+        ce_v_rank, ce_o_rank, ce_c_rank, pe_v_rank, pe_o_rank, pe_c_rank,
+    )
 
     # Build rows as list-of-tuples (no intermediate dict allocation)
     ts_val    = timestamp
@@ -585,19 +653,18 @@ def _compute_tick_rows(symbol: str, config: dict, payload_data: dict):
             int(relative_indices[i]),
             int(strikes[i]),
             lot_val,
-            int(ce_ois[i]),   float(ce_oi_s[i]),
-            int(ce_chngs[i]), float(ce_chng_s[i]),
-            int(ce_vols[i]),  float(ce_vol_s[i]),
+            int(ce_ois[i]),
+            int(ce_chngs[i]),
+            int(ce_vols[i]),
             float(ce_ltps[i]),  float(ce_ivs[i]),  float(ce_deltas[i]),
             float(ce_vol_pct[i]), float(ce_oi_pct[i]), float(ce_chng_pct[i]),
-            int(pe_ois[i]),   float(pe_oi_s[i]),
-            int(pe_chngs[i]), float(pe_chng_s[i]),
-            int(pe_vols[i]),  float(pe_vol_s[i]),
+            int(pe_ois[i]),
+            int(pe_chngs[i]),
+            int(pe_vols[i]),
             float(pe_ltps[i]),  float(pe_ivs[i]),  float(pe_deltas[i]),
             float(pe_vol_pct[i]), float(pe_oi_pct[i]), float(pe_chng_pct[i]),
             float(gammas[i]),
-            ce_ranks[i],
-            pe_ranks[i],
+            int(meta_pack[i]),
         )
         for i in range(n)
     ]
