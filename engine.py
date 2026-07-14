@@ -609,17 +609,17 @@ def _compute_tick_rows(symbol: str, config: dict, payload_data: dict):
 
         ce_ois[idx]    = ce_inner.get("OI",      0)
         ce_chngs[idx]  = ce_inner.get("oichng",  0)
-        ce_vols[idx]   = ce_inner.get("vol",     0)
         ce_ltps[idx]   = ce_inner.get("ltp",     0.0)
         ce_ivs[idx]    = ce_inner.get("iv",      0.0)
         ce_deltas[idx] = ce_geeks.get("delta",   0.0)
         gammas[idx]    = ce_geeks.get("gamma",   0.0)
         pe_ois[idx]    = pe_inner.get("OI",      0)
         pe_chngs[idx]  = pe_inner.get("oichng",  0)
-        pe_vols[idx]   = pe_inner.get("vol",     0)
         pe_ltps[idx]   = pe_inner.get("ltp",     0.0)
         pe_ivs[idx]    = pe_inner.get("iv",      0.0)
         pe_deltas[idx] = pe_geeks.get("delta",   0.0)
+        ce_vols = np.round(np.where(ce_vols < 0, (ce_vols.astype(np.int64) & 0xFFFFFFFF), ce_vols) / 10000.0, 2)
+        pe_vols = np.round(np.where(pe_vols < 0, (pe_vols.astype(np.int64) & 0xFFFFFFFF), pe_vols) / 10000.0, 2)
 
     ce_v_rank, ce_o_rank, ce_c_rank, ce_vol_pct, ce_oi_pct, ce_chng_pct = calculate_ranks_and_percentages_numpy(
         strikes, ce_vols, ce_ois, ce_chngs, atm_strike, step_size, is_ce=True
