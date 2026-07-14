@@ -64,6 +64,7 @@ interface SavedSettings {
   reverseOrder: boolean;
   ceColumns: ColumnConfig[];
   peColumns: ColumnConfig[];
+  rankColors?: RankColors;
 }
 
 const STORAGE_KEY = "option_chain_settings";
@@ -156,23 +157,44 @@ function parseRowToObject(row: number[]): OptionRow {
     pe_oi_pct: row[22],
     pe_chng_pct: row[23],
     gamma: row[24],
-    // Same 3-digit "vol,oi,chng" string format as before -> getRankBg needs zero changes
+    // Same 3-digit "vol,oi,chng" string format as before -> getRankColor needs zero changes
     ce_rank: `${ce_vol_rank}${ce_oi_rank}${ce_chng_rank}`,
     pe_rank: `${pe_vol_rank}${pe_oi_rank}${pe_chng_rank}`,
   };
 }
 
-// ==================== HELPER: Get rank background color ====================
-function getRankBg(rankStr: string, rankIndex: number, side: "ce" | "pe"): string {
+// ==================== HELPER: Rank colors (user-configurable) ====================
+interface RankColors {
+  ce1: string; ce2: string; ce3: string;
+  pe1: string; pe2: string; pe3: string;
+}
+
+// CE: 1st=light red, 2nd=yellow, 3rd=light yellow | PE: 1st=green, 2nd=yellow, 3rd=light yellow
+const DEFAULT_RANK_COLORS: RankColors = {
+  ce1: "#f87171", ce2: "#eab308", ce3: "#fde047",
+  pe1: "#22c55e", pe2: "#eab308", pe3: "#fde047",
+};
+
+const RANK_ALPHA: Record<number, number> = { 1: 0.40, 2: 0.26, 3: 0.14 };
+
+function hexToRgba(hex: string, alpha: number): string {
+  const clean = hex.replace("#", "");
+  const full = clean.length === 3 ? clean.split("").map(c => c + c).join("") : clean;
+  const int = parseInt(full, 16);
+  const r = (int >> 16) & 255, g = (int >> 8) & 255, b = int & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+function getRankColor(rankStr: string, rankIndex: number, side: "ce" | "pe", colors: RankColors): string {
   if (!rankStr || rankStr.length !== 3) return "";
   const rank = parseInt(rankStr[rankIndex], 10);
-  if (rank === 0) return "";
-  
-  const colors = side === "ce" 
-    ? { 1: "bg-cyan-500/40", 2: "bg-cyan-500/25", 3: "bg-cyan-500/15" }
-    : { 1: "bg-orange-500/40", 2: "bg-orange-500/25", 3: "bg-orange-500/15" };
-  
-  return colors[rank as 1 | 2 | 3] || "";
+  if (!rank || rank < 1 || rank > 3) return "";
+
+  const base = side === "ce"
+    ? [colors.ce1, colors.ce2, colors.ce3][rank - 1]
+    : [colors.pe1, colors.pe2, colors.pe3][rank - 1];
+
+  return hexToRgba(base, RANK_ALPHA[rank]);
 }
 
 // ==================== HELPER: Load/Save Settings ====================
@@ -211,6 +233,7 @@ export default function OptionChainPage() {
   const [reverseOrder, setReverseOrder] = useState(false);
   const [ceColumns, setCeColumns] = useState<ColumnConfig[]>(DEFAULT_CE_COLUMNS);
   const [peColumns, setPeColumns] = useState<ColumnConfig[]>(DEFAULT_PE_COLUMNS);
+  const [rankColors, setRankColors] = useState<RankColors>(DEFAULT_RANK_COLORS);
   const [selectedCell, setSelectedCell] = useState<{strike: number; column: string; side: "ce" | "pe"} | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   
@@ -234,6 +257,9 @@ export default function OptionChainPage() {
       if (saved.peColumns && saved.peColumns.length > 0) {
         setPeColumns(saved.peColumns);
       }
+      if (saved.rankColors) {
+        setRankColors({ ...DEFAULT_RANK_COLORS, ...saved.rankColors });
+      }
     }
     setSettingsLoaded(true);
   }, []);
@@ -241,14 +267,32 @@ export default function OptionChainPage() {
   // ==================== Save Settings on Change ====================
   useEffect(() => {
     if (!settingsLoaded) return;
-    saveSettings({ symbol, reverseOrder, ceColumns, peColumns });
-  }, [symbol, reverseOrder, ceColumns, peColumns, settingsLoaded]);
+    saveSettings({ symbol, reverseOrder, ceColumns, peColumns, rankColors });
+  }, [symbol, reverseOrder, ceColumns, peColumns, rankColors, settingsLoaded]);
+
+  // reverseOrder kept in a ref so the socket effect below doesn't need to
+  // depend on it (that was reconnecting the socket - and racing a stale
+  // reconnect timer - every time the toggle changed).
+  const reverseOrderRef = useRef(reverseOrder);
+  useEffect(() => {
+    reverseOrderRef.current = reverseOrder;
+    // Re-sort whatever we already have immediately, don't wait for next tick
+    setRows(prev => {
+      const next = [...prev];
+      next.sort((a, b) => reverseOrder ? b.relative_idx - a.relative_idx : a.relative_idx - b.relative_idx);
+      return next;
+    });
+  }, [reverseOrder]);
 
   // ==================== WebSocket Connection ====================
   useEffect(() => {
     if (!settingsLoaded) return;
 
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+
     const connect = () => {
+      if (stopped) return;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
@@ -263,7 +307,7 @@ export default function OptionChainPage() {
           if (data.type === "tick" && data.symbol === symbol) {
             const parsedRows = data.data.map(parseRowToObject);
             parsedRows.sort((a: OptionRow, b: OptionRow) => 
-              reverseOrder ? b.relative_idx - a.relative_idx : a.relative_idx - b.relative_idx
+              reverseOrderRef.current ? b.relative_idx - a.relative_idx : a.relative_idx - b.relative_idx
             );
             setRows(parsedRows);
             setSpotPrice(data.spot);
@@ -277,7 +321,9 @@ export default function OptionChainPage() {
 
       ws.onclose = () => {
         setConnected(false);
-        setTimeout(connect, 3000);
+        if (!stopped) {
+          reconnectTimer = setTimeout(connect, 3000);
+        }
       };
 
       ws.onerror = () => {
@@ -287,9 +333,11 @@ export default function OptionChainPage() {
 
     connect();
     return () => {
+      stopped = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       wsRef.current?.close();
     };
-  }, [wsUrl, symbol, reverseOrder, settingsLoaded]);
+  }, [wsUrl, symbol, settingsLoaded]);
 
   // ==================== Scroll to ATM on first load ====================
   useEffect(() => {
@@ -347,7 +395,7 @@ export default function OptionChainPage() {
     const unitSuffix = col.unitKey ? (row[col.unitKey] as string) : "";
     const secondaryValue = col.secondaryKey ? row[col.secondaryKey] : null;
     const rankStr = side === "ce" ? row.ce_rank : row.pe_rank;
-    const rankBg = col.rankIndex !== undefined ? getRankBg(rankStr, col.rankIndex, side) : "";
+    const rankColor = col.rankIndex !== undefined ? getRankColor(rankStr, col.rankIndex, side, rankColors) : "";
     
     const isSelected = selectedCell?.strike === row.strike && 
                        selectedCell?.column === col.id && 
@@ -387,11 +435,11 @@ export default function OptionChainPage() {
           onClick={() => handleCellClick(row, col, side)}
           className={`
             px-2 py-1.5 text-right cursor-pointer transition-all border-b border-slate-700/50
-            hover:bg-slate-600/30 ${rankBg}
+            hover:bg-slate-600/30
             ${isSelected ? "ring-2 ring-yellow-400 ring-inset" : ""}
             ${side === "ce" ? "text-cyan-100" : "text-orange-100"}
           `}
-          style={{ width: col.width, minWidth: col.width }}
+          style={{ width: col.width, minWidth: col.width, backgroundColor: rankColor || undefined }}
         >
           <div className="flex flex-col items-end leading-tight">
             <span className="text-[10px] opacity-60">
@@ -551,7 +599,7 @@ export default function OptionChainPage() {
                   <tr
                     ref={isAtm ? atmRowRef : null}
                     className={`
-                      ${isAtm ? "bg-yellow-500/20 hover:bg-yellow-500/30" : "hover:bg-slate-800/50"}
+                      hover:bg-slate-800/50
                       ${row.relative_idx < 0 ? (reverseOrder ? "bg-orange-950/20" : "bg-cyan-950/20") : ""}
                       ${row.relative_idx > 0 ? (reverseOrder ? "bg-cyan-950/20" : "bg-orange-950/20") : ""}
                       transition-colors
@@ -561,10 +609,7 @@ export default function OptionChainPage() {
                     {visibleCeColumns.map(col => renderCell(row, col, "ce"))}
                     
                     {/* Strike */}
-                    <td className={`
-                      px-4 py-2 text-center font-bold border-x border-slate-600
-                      ${isAtm ? "text-yellow-300 text-lg bg-yellow-500/10" : "text-slate-200"}
-                    `}>
+                    <td className="px-4 py-2 text-center font-bold border-x border-slate-600 text-yellow-400 bg-slate-800/40">
                       {row.strike}
                     </td>
                     
@@ -711,6 +756,42 @@ export default function OptionChainPage() {
                 </div>
               </div>
 
+              {/* Rank Colors */}
+              <div>
+                <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Rank Highlight Colors</h3>
+                <p className="text-xs text-slate-500 mb-3">Applies to the top-3 Vol / OI / Chng cells on each side.</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium text-cyan-400">CE side</div>
+                    {(["ce1", "ce2", "ce3"] as const).map((key, i) => (
+                      <div key={key} className="flex items-center gap-2 bg-slate-700/50 rounded-lg px-3 py-2">
+                        <input
+                          type="color"
+                          value={rankColors[key]}
+                          onChange={(e) => setRankColors({ ...rankColors, [key]: e.target.value })}
+                          className="w-8 h-8 rounded cursor-pointer bg-transparent"
+                        />
+                        <span className="text-xs text-slate-300">#{i + 1} rank</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-xs font-medium text-orange-400">PE side</div>
+                    {(["pe1", "pe2", "pe3"] as const).map((key, i) => (
+                      <div key={key} className="flex items-center gap-2 bg-slate-700/50 rounded-lg px-3 py-2">
+                        <input
+                          type="color"
+                          value={rankColors[key]}
+                          onChange={(e) => setRankColors({ ...rankColors, [key]: e.target.value })}
+                          className="w-8 h-8 rounded cursor-pointer bg-transparent"
+                        />
+                        <span className="text-xs text-slate-300">#{i + 1} rank</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
               {/* Reset Settings */}
               <div className="pt-4 border-t border-slate-700">
                 <button
@@ -718,6 +799,7 @@ export default function OptionChainPage() {
                     setCeColumns(DEFAULT_CE_COLUMNS);
                     setPeColumns(DEFAULT_PE_COLUMNS);
                     setReverseOrder(false);
+                    setRankColors(DEFAULT_RANK_COLORS);
                   }}
                   className="px-4 py-2 text-sm bg-red-600/20 text-red-400 rounded-lg hover:bg-red-600/30 transition-colors"
                 >
