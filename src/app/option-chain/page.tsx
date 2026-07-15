@@ -59,31 +59,35 @@ interface ColumnConfig {
   width: number;
 }
 
+type ThemeMode = "light" | "dark";
+
 interface SavedSettings {
   symbol: string;
   reverseOrder: boolean;
   ceColumns: ColumnConfig[];
   peColumns: ColumnConfig[];
   rankColors?: RankColors;
+  theme?: ThemeMode;
+  decorativeFont?: boolean;
 }
 
 const STORAGE_KEY = "option_chain_settings";
 
 // ==================== COLUMN DEFINITIONS ====================
 const DEFAULT_CE_COLUMNS: ColumnConfig[] = [
-  { id: "ce_vol", label: "Volume", shortLabel: "Vol", dataKey: "ce_vol_short", pctKey: "ce_vol_pct", unitKey: "ce_vol_unit", rankIndex: 0, visible: true, width: 80 },
-  { id: "ce_oi", label: "Open Interest", shortLabel: "OI", dataKey: "ce_oi_short", pctKey: "ce_oi_pct", unitKey: "ce_oi_unit", rankIndex: 1, visible: true, width: 80 },
-  { id: "ce_chng", label: "OI Change", shortLabel: "Chng", dataKey: "ce_chng_short", pctKey: "ce_chng_pct", unitKey: "ce_chng_unit", rankIndex: 2, visible: true, width: 80 },
-  { id: "ce_ltp", label: "LTP", shortLabel: "LTP", dataKey: "ce_ltp", visible: true, width: 70 },
   { id: "ce_iv_delta", label: "IV / Delta", shortLabel: "IV/Δ", dataKey: "ce_iv", secondaryKey: "ce_delta", visible: true, width: 70 },
+  { id: "ce_chng", label: "OI Change", shortLabel: "Chng", dataKey: "ce_chng_short", pctKey: "ce_chng_pct", unitKey: "ce_chng_unit", rankIndex: 2, visible: true, width: 80 },
+  { id: "ce_oi", label: "Open Interest", shortLabel: "OI", dataKey: "ce_oi_short", pctKey: "ce_oi_pct", unitKey: "ce_oi_unit", rankIndex: 1, visible: true, width: 80 },
+  { id: "ce_vol", label: "Volume", shortLabel: "Vol", dataKey: "ce_vol_short", pctKey: "ce_vol_pct", unitKey: "ce_vol_unit", rankIndex: 0, visible: true, width: 80 },
+  { id: "ce_ltp", label: "LTP", shortLabel: "LTP", dataKey: "ce_ltp", visible: true, width: 70 },
 ];
 
 const DEFAULT_PE_COLUMNS: ColumnConfig[] = [
-  { id: "pe_iv_delta", label: "IV / Delta", shortLabel: "IV/Δ", dataKey: "pe_iv", secondaryKey: "pe_delta", visible: true, width: 70 },
   { id: "pe_ltp", label: "LTP", shortLabel: "LTP", dataKey: "pe_ltp", visible: true, width: 70 },
-  { id: "pe_chng", label: "OI Change", shortLabel: "Chng", dataKey: "pe_chng_short", pctKey: "pe_chng_pct", unitKey: "pe_chng_unit", rankIndex: 2, visible: true, width: 80 },
-  { id: "pe_oi", label: "Open Interest", shortLabel: "OI", dataKey: "pe_oi_short", pctKey: "pe_oi_pct", unitKey: "pe_oi_unit", rankIndex: 1, visible: true, width: 80 },
   { id: "pe_vol", label: "Volume", shortLabel: "Vol", dataKey: "pe_vol_short", pctKey: "pe_vol_pct", unitKey: "pe_vol_unit", rankIndex: 0, visible: true, width: 80 },
+  { id: "pe_oi", label: "Open Interest", shortLabel: "OI", dataKey: "pe_oi_short", pctKey: "pe_oi_pct", unitKey: "pe_oi_unit", rankIndex: 1, visible: true, width: 80 },
+  { id: "pe_chng", label: "OI Change", shortLabel: "Chng", dataKey: "pe_chng_short", pctKey: "pe_chng_pct", unitKey: "pe_chng_unit", rankIndex: 2, visible: true, width: 80 },
+  { id: "pe_iv_delta", label: "IV / Delta", shortLabel: "IV/Δ", dataKey: "pe_iv", secondaryKey: "pe_delta", visible: true, width: 70 },
 ];
 
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOIL"];
@@ -175,7 +179,7 @@ const DEFAULT_RANK_COLORS: RankColors = {
   pe1: "#22c55e", pe2: "#eab308", pe3: "#fde047",
 };
 
-const RANK_ALPHA: Record<number, number> = { 1: 0.40, 2: 0.26, 3: 0.14 };
+const RANK_ALPHA: Record<number, number> = { 1: 0.62, 2: 0.42, 3: 0.26 };
 
 function hexToRgba(hex: string, alpha: number): string {
   const clean = hex.replace("#", "");
@@ -230,10 +234,12 @@ export default function OptionChainPage() {
   const [timestamp, setTimestamp] = useState("");
   const [connected, setConnected] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [reverseOrder, setReverseOrder] = useState(false);
+  const [reverseOrder, setReverseOrder] = useState(true);
   const [ceColumns, setCeColumns] = useState<ColumnConfig[]>(DEFAULT_CE_COLUMNS);
   const [peColumns, setPeColumns] = useState<ColumnConfig[]>(DEFAULT_PE_COLUMNS);
   const [rankColors, setRankColors] = useState<RankColors>(DEFAULT_RANK_COLORS);
+  const [theme, setTheme] = useState<ThemeMode>("light");
+  const [decorativeFont, setDecorativeFont] = useState(false);
   const [selectedCell, setSelectedCell] = useState<{strike: number; column: string; side: "ce" | "pe"} | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   
@@ -260,6 +266,8 @@ export default function OptionChainPage() {
       if (saved.rankColors) {
         setRankColors({ ...DEFAULT_RANK_COLORS, ...saved.rankColors });
       }
+      setTheme(saved.theme === "dark" ? "dark" : "light");
+      setDecorativeFont(!!saved.decorativeFont);
     }
     setSettingsLoaded(true);
   }, []);
@@ -267,8 +275,8 @@ export default function OptionChainPage() {
   // ==================== Save Settings on Change ====================
   useEffect(() => {
     if (!settingsLoaded) return;
-    saveSettings({ symbol, reverseOrder, ceColumns, peColumns, rankColors });
-  }, [symbol, reverseOrder, ceColumns, peColumns, rankColors, settingsLoaded]);
+    saveSettings({ symbol, reverseOrder, ceColumns, peColumns, rankColors, theme, decorativeFont });
+  }, [symbol, reverseOrder, ceColumns, peColumns, rankColors, theme, decorativeFont, settingsLoaded]);
 
   // reverseOrder kept in a ref so the socket effect below doesn't need to
   // depend on it (that was reconnecting the socket - and racing a stale
@@ -408,18 +416,18 @@ export default function OptionChainPage() {
           key={col.id}
           onClick={() => handleCellClick(row, col, side)}
           className={`
-            px-2 py-1.5 text-right cursor-pointer transition-all border-b border-slate-700/50
-            hover:bg-slate-600/30
+            px-2 py-1.5 text-right cursor-pointer transition-all border-b border-[var(--border-color)]
+            hover:bg-[var(--bg-hover)]
             ${isSelected ? "ring-2 ring-yellow-400 ring-inset" : ""}
-            ${side === "ce" ? "text-cyan-100" : "text-orange-100"}
+            ${side === "ce" ? "text-[var(--cell-ce-text)]" : "text-[var(--cell-pe-text)]"}
           `}
           style={{ width: col.width, minWidth: col.width }}
         >
-          <div className="flex flex-col items-end leading-tight">
-            <span className="text-[10px] opacity-70">
+          <div className="flex flex-col items-end leading-tight gap-0.5">
+            <span className="text-[11px] font-bold">
               IV: {typeof value === "number" ? value.toFixed(1) : value}
             </span>
-            <span className="text-sm font-medium">
+            <span className="text-[11px] font-bold">
               Δ {typeof secondaryValue === "number" ? secondaryValue.toFixed(2) : secondaryValue}
             </span>
           </div>
@@ -434,18 +442,23 @@ export default function OptionChainPage() {
           key={col.id}
           onClick={() => handleCellClick(row, col, side)}
           className={`
-            px-2 py-1.5 text-right cursor-pointer transition-all border-b border-slate-700/50
-            hover:bg-slate-600/30
+            px-2 py-1.5 text-right cursor-pointer transition-all border-b border-[var(--border-color)]
+            hover:bg-[var(--bg-hover)]
             ${isSelected ? "ring-2 ring-yellow-400 ring-inset" : ""}
-            ${side === "ce" ? "text-cyan-100" : "text-orange-100"}
+            ${side === "ce" ? "text-[var(--cell-ce-text)]" : "text-[var(--cell-pe-text)]"}
           `}
-          style={{ width: col.width, minWidth: col.width, backgroundColor: rankColor || undefined }}
+          style={{
+            width: col.width,
+            minWidth: col.width,
+            backgroundColor: rankColor || undefined,
+            color: rankColor ? "#111827" : undefined,
+          }}
         >
-          <div className="flex flex-col items-end leading-tight">
-            <span className="text-[10px] opacity-60">
+          <div className="flex flex-col items-end leading-tight gap-0.5">
+            <span className="text-[11px] font-bold">
               {typeof pctValue === "number" ? pctValue.toFixed(1) : pctValue}%
             </span>
-            <span className="text-sm font-medium">
+            <span className="text-[11px] font-bold">
               {typeof value === "number" ? value.toFixed(2) : value}{unitSuffix}
             </span>
           </div>
@@ -459,10 +472,10 @@ export default function OptionChainPage() {
         key={col.id}
         onClick={() => handleCellClick(row, col, side)}
         className={`
-          px-2 py-1.5 text-right cursor-pointer transition-all border-b border-slate-700/50
-          hover:bg-slate-600/30
+          px-2 py-1.5 text-right cursor-pointer transition-all border-b border-[var(--border-color)]
+          hover:bg-[var(--bg-hover)]
           ${isSelected ? "ring-2 ring-yellow-400 ring-inset" : ""}
-          ${side === "ce" ? "text-cyan-100" : "text-orange-100"}
+          ${side === "ce" ? "text-[var(--cell-ce-text)]" : "text-[var(--cell-pe-text)]"}
         `}
         style={{ width: col.width, minWidth: col.width }}
       >
@@ -480,16 +493,16 @@ export default function OptionChainPage() {
   // Don't render until settings loaded
   if (!settingsLoaded) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
-        <div className="text-cyan-400 text-lg">Loading...</div>
+      <div data-theme={theme} className="min-h-screen bg-[var(--bg-page)] flex items-center justify-center">
+        <div className="text-red-500 text-lg">Loading...</div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-white">
+    <div data-theme={theme} className={`min-h-screen bg-[var(--bg-page)] text-[var(--text-primary)] ${decorativeFont ? "font-sketch" : ""}`}>
       {/* ==================== HEADER ==================== */}
-      <header className="sticky top-0 z-50 bg-slate-800 border-b border-slate-700 px-4 py-3">
+      <header className="sticky top-0 z-50 bg-[var(--bg-panel)] border-b border-[var(--border-color)] px-4 py-3">
         <div className="flex items-center justify-between max-w-full">
           {/* Symbol Dropdown */}
           <div className="flex items-center gap-4">
@@ -497,13 +510,13 @@ export default function OptionChainPage() {
               <select
                 value={symbol}
                 onChange={(e) => handleSymbolChange(e.target.value)}
-                className="appearance-none bg-slate-700 text-white px-4 py-2 pr-10 rounded-lg font-semibold text-lg cursor-pointer hover:bg-slate-600 transition-colors"
+                className="appearance-none bg-[var(--bg-panel-alt)] text-[var(--text-primary)] px-4 py-2 pr-10 rounded-lg font-semibold text-lg cursor-pointer hover:bg-[var(--bg-hover)] transition-colors"
               >
                 {SYMBOLS.map(s => (
                   <option key={s} value={s}>{s}</option>
                 ))}
               </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none text-slate-400" />
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none text-[var(--text-secondary)]" />
             </div>
             
             {/* Connection Status */}
@@ -513,14 +526,14 @@ export default function OptionChainPage() {
             </div>
             
             {timestamp && (
-              <span className="text-xs text-slate-400 hidden sm:inline">{timestamp}</span>
+              <span className="text-xs text-[var(--text-secondary)] hidden sm:inline">{timestamp}</span>
             )}
           </div>
 
           {/* Settings Button */}
           <button
             onClick={() => setSettingsOpen(true)}
-            className="p-2 rounded-lg bg-slate-700 hover:bg-slate-600 transition-colors"
+            className="p-2 rounded-lg bg-[var(--bg-panel-alt)] hover:bg-[var(--bg-hover)] transition-colors"
           >
             <Settings className="w-5 h-5" />
           </button>
@@ -535,13 +548,13 @@ export default function OptionChainPage() {
       >
         <table className="w-full border-collapse">
           {/* Column Headers - Sticky */}
-          <thead className="sticky top-0 z-40 bg-slate-800">
+          <thead className="sticky top-0 z-40 bg-[var(--bg-panel)]">
             <tr>
               {/* CE Headers */}
               {visibleCeColumns.map(col => (
                 <th 
                   key={col.id}
-                  className="px-2 py-3 text-right text-xs font-semibold uppercase tracking-wider text-cyan-400 border-b-2 border-cyan-500/30 bg-slate-800"
+                  className="px-2 py-3 text-right text-xs font-semibold uppercase tracking-wider text-red-500 border-b-2 border-red-500/30 bg-[var(--bg-panel)]"
                   style={{ width: col.width, minWidth: col.width }}
                 >
                   {col.shortLabel}
@@ -549,7 +562,7 @@ export default function OptionChainPage() {
               ))}
               
               {/* Strike Header */}
-              <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-yellow-400 border-b-2 border-yellow-500/30 bg-slate-800">
+              <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-yellow-400 border-b-2 border-yellow-500/30 bg-[var(--bg-panel)]">
                 Strike
               </th>
               
@@ -557,7 +570,7 @@ export default function OptionChainPage() {
               {visiblePeColumns.map(col => (
                 <th 
                   key={col.id}
-                  className="px-2 py-3 text-right text-xs font-semibold uppercase tracking-wider text-orange-400 border-b-2 border-orange-500/30 bg-slate-800"
+                  className="px-2 py-3 text-right text-xs font-semibold uppercase tracking-wider text-green-600 border-b-2 border-green-500/30 bg-[var(--bg-panel)]"
                   style={{ width: col.width, minWidth: col.width }}
                 >
                   {col.shortLabel}
@@ -569,24 +582,26 @@ export default function OptionChainPage() {
           <tbody>
             {rows.map((row, idx) => {
               const isAtm = row.relative_idx === 0;
-              const showSpotRow = isAtm && !reverseOrder;
-              const showSpotAfter = isAtm && reverseOrder;
+              // Spot price always belongs directly above the ATM strike row: the ATM
+              // strike is the nearest strike at-or-below spot, so spot itself sits
+              // just above it whichever direction the list is sorted in.
+              const showSpotRow = isAtm;
 
               return (
                 <React.Fragment key={row.strike}>
                   {/* Spot Price Row - Above ATM */}
                   {showSpotRow && (
-                    <tr className="bg-gradient-to-r from-slate-800 via-slate-700 to-slate-800">
+                    <tr className="bg-[var(--bg-panel-alt)]">
                       <td 
                         colSpan={visibleCeColumns.length + 1 + visiblePeColumns.length}
-                        className="py-3 text-center border-b border-slate-600"
+                        className="py-3 text-center border-b border-[var(--border-color)]"
                       >
                         <div className="flex items-center justify-center gap-4 sm:gap-6">
-                          <span className="text-slate-400 text-sm hidden sm:inline">Spot Price</span>
-                          <span className="text-xl sm:text-2xl font-bold text-white">
+                          <span className="text-[var(--text-primary)] text-base sm:text-lg font-bold hidden sm:inline">Spot Price</span>
+                          <span className="text-xl sm:text-2xl font-bold text-[var(--text-primary)]">
                             {spotPrice.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
                           </span>
-                          <span className={`flex items-center gap-1 text-base sm:text-lg font-semibold ${spotChng >= 0 ? "text-green-400" : "text-red-400"}`}>
+                          <span className={`flex items-center gap-1 text-base sm:text-lg font-semibold ${spotChng >= 0 ? "text-green-500" : "text-red-500"}`}>
                             {spotChng >= 0 ? <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5" /> : <TrendingDown className="w-4 h-4 sm:w-5 sm:h-5" />}
                             {spotChng >= 0 ? "+" : ""}{spotChng.toFixed(2)}
                           </span>
@@ -599,9 +614,9 @@ export default function OptionChainPage() {
                   <tr
                     ref={isAtm ? atmRowRef : null}
                     className={`
-                      hover:bg-slate-800/50
-                      ${row.relative_idx < 0 ? (reverseOrder ? "bg-orange-950/20" : "bg-cyan-950/20") : ""}
-                      ${row.relative_idx > 0 ? (reverseOrder ? "bg-cyan-950/20" : "bg-orange-950/20") : ""}
+                      hover:bg-[var(--bg-hover)]
+                      ${row.relative_idx < 0 ? (reverseOrder ? "bg-[var(--row-alt-pe)]" : "bg-[var(--row-alt-ce)]") : ""}
+                      ${row.relative_idx > 0 ? (reverseOrder ? "bg-[var(--row-alt-ce)]" : "bg-[var(--row-alt-pe)]") : ""}
                       transition-colors
                     `}
                   >
@@ -609,7 +624,7 @@ export default function OptionChainPage() {
                     {visibleCeColumns.map(col => renderCell(row, col, "ce"))}
                     
                     {/* Strike */}
-                    <td className="px-4 py-2 text-center font-bold border-x border-slate-600 text-yellow-400 bg-slate-800/40">
+                    <td className="px-4 py-2 text-center font-bold border-x border-[var(--border-color)] text-yellow-400 bg-[var(--bg-panel-alt)]">
                       {row.strike}
                     </td>
                     
@@ -617,26 +632,6 @@ export default function OptionChainPage() {
                     {visiblePeColumns.map(col => renderCell(row, col, "pe"))}
                   </tr>
 
-                  {/* Spot Price Row - Below ATM (for reverse order) */}
-                  {showSpotAfter && (
-                    <tr className="bg-gradient-to-r from-slate-800 via-slate-700 to-slate-800">
-                      <td 
-                        colSpan={visibleCeColumns.length + 1 + visiblePeColumns.length}
-                        className="py-3 text-center border-t border-slate-600"
-                      >
-                        <div className="flex items-center justify-center gap-4 sm:gap-6">
-                          <span className="text-slate-400 text-sm hidden sm:inline">Spot Price</span>
-                          <span className="text-xl sm:text-2xl font-bold text-white">
-                            {spotPrice.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
-                          </span>
-                          <span className={`flex items-center gap-1 text-base sm:text-lg font-semibold ${spotChng >= 0 ? "text-green-400" : "text-red-400"}`}>
-                            {spotChng >= 0 ? <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5" /> : <TrendingDown className="w-4 h-4 sm:w-5 sm:h-5" />}
-                            {spotChng >= 0 ? "+" : ""}{spotChng.toFixed(2)}
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
                 </React.Fragment>
               );
             })}
@@ -647,13 +642,13 @@ export default function OptionChainPage() {
       {/* ==================== SETTINGS MODAL ==================== */}
       {settingsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-slate-800 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-auto">
+          <div className="bg-[var(--bg-panel)] rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-auto">
             {/* Modal Header */}
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700 sticky top-0 bg-slate-800">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-color)] sticky top-0 bg-[var(--bg-panel)]">
               <h2 className="text-xl font-bold">Settings</h2>
               <button
                 onClick={() => setSettingsOpen(false)}
-                className="p-2 rounded-lg hover:bg-slate-700 transition-colors"
+                className="p-2 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -663,53 +658,91 @@ export default function OptionChainPage() {
             <div className="p-6 space-y-6">
               {/* Strike Order */}
               <div>
-                <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Strike Order</h3>
+                <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3">Strike Order</h3>
                 <div className="flex gap-3">
                   <button
                     onClick={() => setReverseOrder(false)}
-                    className={`flex-1 px-4 py-3 rounded-lg border-2 transition-all ${!reverseOrder ? "border-cyan-500 bg-cyan-500/20" : "border-slate-600 hover:border-slate-500"}`}
+                    className={`flex-1 px-4 py-3 rounded-lg border-2 transition-all ${!reverseOrder ? "border-cyan-500 bg-cyan-500/20" : "border-[var(--border-color)] hover:border-[var(--text-muted)]"}`}
                   >
                     <div className="text-sm font-medium">Small ↑ Big ↓</div>
-                    <div className="text-xs text-slate-400 mt-1">Lower strikes on top</div>
+                    <div className="text-xs text-[var(--text-secondary)] mt-1">Lower strikes on top</div>
                   </button>
                   <button
                     onClick={() => setReverseOrder(true)}
-                    className={`flex-1 px-4 py-3 rounded-lg border-2 transition-all ${reverseOrder ? "border-cyan-500 bg-cyan-500/20" : "border-slate-600 hover:border-slate-500"}`}
+                    className={`flex-1 px-4 py-3 rounded-lg border-2 transition-all ${reverseOrder ? "border-cyan-500 bg-cyan-500/20" : "border-[var(--border-color)] hover:border-[var(--text-muted)]"}`}
                   >
                     <div className="text-sm font-medium">Big ↑ Small ↓</div>
-                    <div className="text-xs text-slate-400 mt-1">Higher strikes on top</div>
+                    <div className="text-xs text-[var(--text-secondary)] mt-1">Higher strikes on top</div>
                   </button>
                 </div>
               </div>
 
+              {/* Theme */}
+              <div>
+                <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3">Theme</h3>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setTheme("light")}
+                    className={`flex-1 px-4 py-3 rounded-lg border-2 transition-all ${theme === "light" ? "border-cyan-500 bg-cyan-500/20" : "border-[var(--border-color)] hover:border-[var(--text-muted)]"}`}
+                  >
+                    <div className="text-sm font-medium">Light</div>
+                    <div className="text-xs text-[var(--text-secondary)] mt-1">Default theme</div>
+                  </button>
+                  <button
+                    onClick={() => setTheme("dark")}
+                    className={`flex-1 px-4 py-3 rounded-lg border-2 transition-all ${theme === "dark" ? "border-cyan-500 bg-cyan-500/20" : "border-[var(--border-color)] hover:border-[var(--text-muted)]"}`}
+                  >
+                    <div className="text-sm font-medium">Dark</div>
+                    <div className="text-xs text-[var(--text-secondary)] mt-1">Low-light viewing</div>
+                  </button>
+                </div>
+              </div>
+
+              {/* Decorative Font (optional, off by default) */}
+              <div>
+                <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3">Font</h3>
+                <label className="flex items-center gap-3 bg-[var(--bg-panel-alt)] rounded-lg px-4 py-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={decorativeFont}
+                    onChange={(e) => setDecorativeFont(e.target.checked)}
+                    className="w-4 h-4 rounded border-[var(--border-color)] text-cyan-500 focus:ring-cyan-500"
+                  />
+                  <div className="flex-1">
+                    <div className="text-sm font-medium">Decorative sketch font</div>
+                    <div className="text-xs text-[var(--text-secondary)] mt-1">Optional handwritten-style font. Off by default.</div>
+                  </div>
+                </label>
+              </div>
+
               {/* CE Columns */}
               <div>
-                <h3 className="text-sm font-semibold text-cyan-400 uppercase tracking-wider mb-3">CE Columns</h3>
+                <h3 className="text-sm font-semibold text-red-500 uppercase tracking-wider mb-3">CE Columns</h3>
                 <div className="space-y-2">
                   {ceColumns.map((col, idx) => (
                     <div
                       key={col.id}
-                      className="flex items-center gap-3 bg-slate-700/50 rounded-lg px-4 py-2"
+                      className="flex items-center gap-3 bg-[var(--bg-panel-alt)] rounded-lg px-4 py-2"
                     >
                       <input
                         type="checkbox"
                         checked={col.visible}
                         onChange={() => toggleColumnVisibility("ce", col.id)}
-                        className="w-4 h-4 rounded border-slate-500 text-cyan-500 focus:ring-cyan-500"
+                        className="w-4 h-4 rounded border-[var(--border-color)] text-red-500 focus:ring-red-500"
                       />
                       <span className="flex-1 text-sm">{col.label}</span>
                       <div className="flex gap-1">
                         <button
                           onClick={() => idx > 0 && moveColumn("ce", idx, idx - 1)}
                           disabled={idx === 0}
-                          className="px-2 py-1 text-xs bg-slate-600 rounded hover:bg-slate-500 disabled:opacity-30"
+                          className="px-2 py-1 text-xs bg-[var(--bg-hover)] rounded hover:bg-[var(--bg-hover)] disabled:opacity-30"
                         >
                           ↑
                         </button>
                         <button
                           onClick={() => idx < ceColumns.length - 1 && moveColumn("ce", idx, idx + 1)}
                           disabled={idx === ceColumns.length - 1}
-                          className="px-2 py-1 text-xs bg-slate-600 rounded hover:bg-slate-500 disabled:opacity-30"
+                          className="px-2 py-1 text-xs bg-[var(--bg-hover)] rounded hover:bg-[var(--bg-hover)] disabled:opacity-30"
                         >
                           ↓
                         </button>
@@ -721,32 +754,32 @@ export default function OptionChainPage() {
 
               {/* PE Columns */}
               <div>
-                <h3 className="text-sm font-semibold text-orange-400 uppercase tracking-wider mb-3">PE Columns</h3>
+                <h3 className="text-sm font-semibold text-green-600 uppercase tracking-wider mb-3">PE Columns</h3>
                 <div className="space-y-2">
                   {peColumns.map((col, idx) => (
                     <div
                       key={col.id}
-                      className="flex items-center gap-3 bg-slate-700/50 rounded-lg px-4 py-2"
+                      className="flex items-center gap-3 bg-[var(--bg-panel-alt)] rounded-lg px-4 py-2"
                     >
                       <input
                         type="checkbox"
                         checked={col.visible}
                         onChange={() => toggleColumnVisibility("pe", col.id)}
-                        className="w-4 h-4 rounded border-slate-500 text-orange-500 focus:ring-orange-500"
+                        className="w-4 h-4 rounded border-[var(--border-color)] text-green-600 focus:ring-green-600"
                       />
                       <span className="flex-1 text-sm">{col.label}</span>
                       <div className="flex gap-1">
                         <button
                           onClick={() => idx > 0 && moveColumn("pe", idx, idx - 1)}
                           disabled={idx === 0}
-                          className="px-2 py-1 text-xs bg-slate-600 rounded hover:bg-slate-500 disabled:opacity-30"
+                          className="px-2 py-1 text-xs bg-[var(--bg-hover)] rounded hover:bg-[var(--bg-hover)] disabled:opacity-30"
                         >
                           ↑
                         </button>
                         <button
                           onClick={() => idx < peColumns.length - 1 && moveColumn("pe", idx, idx + 1)}
                           disabled={idx === peColumns.length - 1}
-                          className="px-2 py-1 text-xs bg-slate-600 rounded hover:bg-slate-500 disabled:opacity-30"
+                          className="px-2 py-1 text-xs bg-[var(--bg-hover)] rounded hover:bg-[var(--bg-hover)] disabled:opacity-30"
                         >
                           ↓
                         </button>
@@ -758,34 +791,34 @@ export default function OptionChainPage() {
 
               {/* Rank Colors */}
               <div>
-                <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">Rank Highlight Colors</h3>
-                <p className="text-xs text-slate-500 mb-3">Applies to the top-3 Vol / OI / Chng cells on each side.</p>
+                <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3">Rank Highlight Colors</h3>
+                <p className="text-xs text-[var(--text-muted)] mb-3">Applies to the top-3 Vol / OI / Chng cells on each side.</p>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <div className="text-xs font-medium text-cyan-400">CE side</div>
+                    <div className="text-xs font-medium text-red-500">CE side</div>
                     {(["ce1", "ce2", "ce3"] as const).map((key, i) => (
-                      <div key={key} className="flex items-center gap-2 bg-slate-700/50 rounded-lg px-3 py-2">
+                      <div key={key} className="flex items-center gap-2 bg-[var(--bg-panel-alt)] rounded-lg px-3 py-2">
                         <input
                           type="color"
                           value={rankColors[key]}
                           onChange={(e) => setRankColors({ ...rankColors, [key]: e.target.value })}
                           className="w-8 h-8 rounded cursor-pointer bg-transparent"
                         />
-                        <span className="text-xs text-slate-300">#{i + 1} rank</span>
+                        <span className="text-xs text-[var(--text-secondary)]">#{i + 1} rank</span>
                       </div>
                     ))}
                   </div>
                   <div className="space-y-2">
-                    <div className="text-xs font-medium text-orange-400">PE side</div>
+                    <div className="text-xs font-medium text-green-600">PE side</div>
                     {(["pe1", "pe2", "pe3"] as const).map((key, i) => (
-                      <div key={key} className="flex items-center gap-2 bg-slate-700/50 rounded-lg px-3 py-2">
+                      <div key={key} className="flex items-center gap-2 bg-[var(--bg-panel-alt)] rounded-lg px-3 py-2">
                         <input
                           type="color"
                           value={rankColors[key]}
                           onChange={(e) => setRankColors({ ...rankColors, [key]: e.target.value })}
                           className="w-8 h-8 rounded cursor-pointer bg-transparent"
                         />
-                        <span className="text-xs text-slate-300">#{i + 1} rank</span>
+                        <span className="text-xs text-[var(--text-secondary)]">#{i + 1} rank</span>
                       </div>
                     ))}
                   </div>
@@ -793,13 +826,15 @@ export default function OptionChainPage() {
               </div>
 
               {/* Reset Settings */}
-              <div className="pt-4 border-t border-slate-700">
+              <div className="pt-4 border-t border-[var(--border-color)]">
                 <button
                   onClick={() => {
                     setCeColumns(DEFAULT_CE_COLUMNS);
                     setPeColumns(DEFAULT_PE_COLUMNS);
-                    setReverseOrder(false);
+                    setReverseOrder(true);
                     setRankColors(DEFAULT_RANK_COLORS);
+                    setTheme("light");
+                    setDecorativeFont(false);
                   }}
                   className="px-4 py-2 text-sm bg-red-600/20 text-red-400 rounded-lg hover:bg-red-600/30 transition-colors"
                 >
@@ -809,8 +844,8 @@ export default function OptionChainPage() {
             </div>
 
             {/* Modal Footer */}
-            <div className="px-6 py-4 border-t border-slate-700 flex justify-between items-center sticky bottom-0 bg-slate-800">
-              <span className="text-xs text-slate-500">Settings auto-saved locally</span>
+            <div className="px-6 py-4 border-t border-[var(--border-color)] flex justify-between items-center sticky bottom-0 bg-[var(--bg-panel)]">
+              <span className="text-xs text-[var(--text-muted)]">Settings auto-saved locally</span>
               <button
                 onClick={() => setSettingsOpen(false)}
                 className="px-6 py-2 bg-cyan-600 hover:bg-cyan-500 rounded-lg font-medium transition-colors"
@@ -824,19 +859,19 @@ export default function OptionChainPage() {
 
       {/* ==================== SELECTED CELL INFO ==================== */}
       {selectedCell && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-slate-800 border border-slate-600 rounded-xl px-4 sm:px-6 py-3 shadow-2xl flex items-center gap-3 sm:gap-4">
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-[var(--bg-panel)] border border-[var(--border-color)] rounded-xl px-4 sm:px-6 py-3 shadow-2xl flex items-center gap-3 sm:gap-4">
           <div className="text-sm">
-            <span className={selectedCell.side === "ce" ? "text-cyan-400" : "text-orange-400"}>
+            <span className={selectedCell.side === "ce" ? "text-red-500" : "text-green-600"}>
               {selectedCell.side.toUpperCase()}
             </span>
-            <span className="text-white mx-2">|</span>
+            <span className="text-[var(--text-primary)] mx-2">|</span>
             <span className="text-yellow-400">Strike {selectedCell.strike}</span>
-            <span className="text-white mx-2">|</span>
-            <span className="text-slate-200">{selectedCell.column}</span>
+            <span className="text-[var(--text-primary)] mx-2">|</span>
+            <span className="text-[var(--text-primary)]">{selectedCell.column}</span>
           </div>
           <button
             onClick={() => setSelectedCell(null)}
-            className="p-1 rounded hover:bg-slate-700"
+            className="p-1 rounded hover:bg-[var(--bg-hover)]"
           >
             <X className="w-4 h-4" />
           </button>

@@ -1,1 +1,43 @@
+@import url('https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&display=swap');
 @import "tailwindcss";
+
+/* ==================== THEME VARIABLES ====================
+   Light theme is the default (:root). Dark theme is applied by setting
+   data-theme="dark" on a wrapping element. All option-chain UI colors
+   read from these variables so nothing gets hard-coded per theme. */
+:root {
+  --bg-page: #f1f5f9;
+  --bg-panel: #ffffff;
+  --bg-panel-alt: #f1f5f9;
+  --bg-hover: #e2e8f0;
+  --border-color: #cbd5e1;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --cell-ce-text: #991b1b;
+  --cell-pe-text: #166534;
+  --row-alt-ce: rgba(220, 38, 38, 0.06);
+  --row-alt-pe: rgba(22, 163, 74, 0.06);
+}
+
+[data-theme="dark"] {
+  --bg-page: #0f172a;
+  --bg-panel: #1e293b;
+  --bg-panel-alt: rgba(51, 65, 85, 0.5);
+  --bg-hover: #334155;
+  --border-color: #334155;
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --cell-ce-text: #fca5a5;
+  --cell-pe-text: #86efac;
+  --row-alt-ce: rgba(127, 29, 29, 0.18);
+  --row-alt-pe: rgba(20, 83, 45, 0.18);
+}
+
+/* Optional decorative "sketch" style font — opt-in only via Settings,
+   never applied by default. */
+.font-sketch,
+.font-sketch * {
+  font-family: "Caveat", cursive !important;
+}

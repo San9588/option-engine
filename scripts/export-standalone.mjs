@@ -153,8 +153,44 @@ const html = `<!DOCTYPE html>
 <!-- Tailwind CDN (play build) - same utility classes the app already uses -->
 <script src="https://cdn.tailwindcss.com"></script>
 
+<!-- Optional decorative "sketch" font (opt-in only, toggled in Settings) -->
+<link href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;700&display=swap" rel="stylesheet">
+
 <style>
-  html, body, #root { height: 100%; margin: 0; background: #0f172a; }
+  html, body, #root { height: 100%; margin: 0; background: #f1f5f9; }
+
+  /* Theme variables — mirrors src/app/globals.css. Light is the default;
+     [data-theme="dark"] overrides it. Kept in sync manually since this
+     standalone build doesn't go through the Next.js/Tailwind CSS pipeline. */
+  :root {
+    --bg-page: #f1f5f9;
+    --bg-panel: #ffffff;
+    --bg-panel-alt: #f1f5f9;
+    --bg-hover: #e2e8f0;
+    --border-color: #cbd5e1;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
+    --cell-ce-text: #991b1b;
+    --cell-pe-text: #166534;
+    --row-alt-ce: rgba(220, 38, 38, 0.06);
+    --row-alt-pe: rgba(22, 163, 74, 0.06);
+  }
+  [data-theme="dark"] {
+    --bg-page: #0f172a;
+    --bg-panel: #1e293b;
+    --bg-panel-alt: rgba(51, 65, 85, 0.5);
+    --bg-hover: #334155;
+    --border-color: #334155;
+    --text-primary: #f8fafc;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --cell-ce-text: #fca5a5;
+    --cell-pe-text: #86efac;
+    --row-alt-ce: rgba(127, 29, 29, 0.18);
+    --row-alt-pe: rgba(20, 83, 45, 0.18);
+  }
+  .font-sketch, .font-sketch * { font-family: "Caveat", cursive !important; }
 </style>
 </head>
 <body>
