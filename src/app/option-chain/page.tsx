@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { Settings, ChevronDown, X, TrendingUp, TrendingDown } from "lucide-react";
 
 // ==================== TYPES ====================
@@ -81,6 +81,8 @@ interface SavedSettings {
 }
 
 const STORAGE_KEY = "option_chain_settings";
+const SETTINGS_VERSION = 2;
+const SETTINGS_SAVE_DELAY_MS = 250;
 
 // ==================== COLUMN DEFINITIONS ====================
 const DEFAULT_CE_COLUMNS: ColumnConfig[] = [
@@ -113,6 +115,10 @@ function shortValue(raw: number, unitCode: number): number {
 }
 
 // ==================== HELPER: Parse row array to object ====================
+function isValidWireRow(row: unknown): row is number[] {
+  return Array.isArray(row) && row.length >= 26 && row.every((value, index) => index === 0 || Number.isFinite(value));
+}
+
 function parseRowToObject(row: number[]): OptionRow {
   const ce_oi = row[6];
   const ce_chng = row[7];
@@ -187,12 +193,11 @@ interface RankColors {
 }
 
 interface RankVisibility {
-  rank2Enabled: boolean;
-  rank2Threshold: number;
-  rank3Enabled: boolean;
-  rank3Threshold: number;
+  ceRank2Enabled: boolean; ceRank2Threshold: number;
+  peRank2Enabled: boolean; peRank2Threshold: number;
+  ceRank3Enabled: boolean; ceRank3Threshold: number;
+  peRank3Enabled: boolean; peRank3Threshold: number;
 }
-
 // CE: 1st=light red, 2nd=yellow, 3rd=light yellow | PE: 1st=green, 2nd=yellow, 3rd=light yellow
 const DEFAULT_RANK_COLORS: RankColors = {
   ce1: "#f87171", ce2: "#eab308", ce3: "#fde047",
@@ -200,10 +205,10 @@ const DEFAULT_RANK_COLORS: RankColors = {
 };
 
 const DEFAULT_RANK_VISIBILITY: RankVisibility = {
-  rank2Enabled: true,
-  rank2Threshold: 75,
-  rank3Enabled: false,
-  rank3Threshold: 75,
+  ceRank2Enabled: true, ceRank2Threshold: 75,
+  peRank2Enabled: true, peRank2Threshold: 75,
+  ceRank3Enabled: false, ceRank3Threshold: 75,
+  peRank3Enabled: false, peRank3Threshold: 75,
 };
 
 const RANK_ALPHA: Record<number, number> = { 1: 0.85, 2: 0.55, 3: 0.35 };
@@ -221,8 +226,9 @@ function getRankColor(rankStr: string, rankIndex: number, side: "ce" | "pe", col
   const rank = parseInt(rankStr[rankIndex], 10);
   if (!rank || rank < 1 || rank > 3) return "";
   const percentage = typeof pctValue === "number" ? pctValue : 0;
-  if (rank === 2 && (!visibility.rank2Enabled || percentage <= visibility.rank2Threshold)) return "";
-  if (rank === 3 && (!visibility.rank3Enabled || percentage <= visibility.rank3Threshold)) return "";
+  const enabled = visibility[`${side}Rank${rank}Enabled` as keyof RankVisibility];
+  const threshold = visibility[`${side}Rank${rank}Threshold` as keyof RankVisibility];
+  if ((rank === 2 || rank === 3) && (!enabled || percentage <= Number(threshold))) return "";
 
   const base = side === "ce"
     ? [colors.ce1, colors.ce2, colors.ce3][rank - 1]
@@ -237,7 +243,8 @@ function loadSettings(): SavedSettings | null {
   try {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
-      return JSON.parse(saved);
+      const parsed = JSON.parse(saved);
+      return parsed?.version ? parsed.settings : parsed; // migrate unversioned settings
     }
   } catch (e) {
     console.error("Failed to load settings:", e);
@@ -248,7 +255,7 @@ function loadSettings(): SavedSettings | null {
 function saveSettings(settings: SavedSettings) {
   if (typeof window === "undefined") return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: SETTINGS_VERSION, settings }));
   } catch (e) {
     console.error("Failed to save settings:", e);
   }
@@ -303,7 +310,18 @@ export default function OptionChainPage() {
         setRankColors({ ...DEFAULT_RANK_COLORS, ...saved.rankColors });
       }
       if (saved.rankVisibility) {
-        setRankVisibility({ ...DEFAULT_RANK_VISIBILITY, ...saved.rankVisibility });
+        const legacy = saved.rankVisibility as RankVisibility & { rank2Enabled?: boolean; rank2Threshold?: number; rank3Enabled?: boolean; rank3Threshold?: number };
+        setRankVisibility({
+          ...DEFAULT_RANK_VISIBILITY,
+          ceRank2Enabled: legacy.ceRank2Enabled ?? legacy.rank2Enabled ?? true,
+          peRank2Enabled: legacy.peRank2Enabled ?? legacy.rank2Enabled ?? true,
+          ceRank2Threshold: legacy.ceRank2Threshold ?? legacy.rank2Threshold ?? 75,
+          peRank2Threshold: legacy.peRank2Threshold ?? legacy.rank2Threshold ?? 75,
+          ceRank3Enabled: legacy.ceRank3Enabled ?? legacy.rank3Enabled ?? false,
+          peRank3Enabled: legacy.peRank3Enabled ?? legacy.rank3Enabled ?? false,
+          ceRank3Threshold: legacy.ceRank3Threshold ?? legacy.rank3Threshold ?? 75,
+          peRank3Threshold: legacy.peRank3Threshold ?? legacy.rank3Threshold ?? 75,
+        });
       }
       setTheme(saved.theme === "dark" ? "dark" : "light");
       setFontStyle(saved.fontStyle || (saved.decorativeFont ? "sketch" : "system"));
@@ -320,7 +338,8 @@ export default function OptionChainPage() {
   // ==================== Save Settings on Change ====================
   useEffect(() => {
     if (!settingsLoaded) return;
-    saveSettings({ symbol, reverseOrder, ceColumns, peColumns, rankColors, rankVisibility, theme, fontStyle, fontScale, fontWeight, cellWidthScale, cellHeightScale, strikeRange });
+    const timer = setTimeout(() => saveSettings({ symbol, reverseOrder, ceColumns, peColumns, rankColors, rankVisibility, theme, fontStyle, fontScale, fontWeight, cellWidthScale, cellHeightScale, strikeRange }), SETTINGS_SAVE_DELAY_MS);
+    return () => clearTimeout(timer);
   }, [symbol, reverseOrder, ceColumns, peColumns, rankColors, rankVisibility, theme, fontStyle, fontScale, fontWeight, cellWidthScale, cellHeightScale, strikeRange, settingsLoaded]);
 
   // reverseOrder kept in a ref so the socket effect below doesn't need to
@@ -358,11 +377,20 @@ export default function OptionChainPage() {
         try {
           const data = JSON.parse(event.data);
           if (data.type === "tick" && data.symbol === symbol) {
-            const parsedRows = data.data.map(parseRowToObject);
-            parsedRows.sort((a: OptionRow, b: OptionRow) => 
+            if (!Array.isArray(data.data)) return;
+            const validRows = data.data.filter(isValidWireRow);
+            if (validRows.length !== data.data.length) console.warn("Ignored malformed option-chain rows");
+            const parsedRows = validRows.map(parseRowToObject);
+            parsedRows.sort((a: OptionRow, b: OptionRow) =>
               reverseOrderRef.current ? b.relative_idx - a.relative_idx : a.relative_idx - b.relative_idx
             );
-            setRows(parsedRows);
+            setRows(previous => {
+              const byStrike = new Map(previous.map(row => [row.strike, row]));
+              return parsedRows.map((row: OptionRow) => {
+                const oldRow = byStrike.get(row.strike);
+                return oldRow && Object.keys(row).every(key => oldRow[key as keyof OptionRow] === row[key as keyof OptionRow]) ? oldRow : row;
+              });
+            });
             setSpotPrice(data.spot);
             setSpotChng(data.spot_chng);
             setTimestamp(data.timestamp);
@@ -409,10 +437,6 @@ export default function OptionChainPage() {
   const handleSymbolChange = (newSymbol: string) => {
     setSymbol(newSymbol);
     setRows([]);
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ action: "unsubscribe", symbol }));
-      wsRef.current.send(JSON.stringify({ action: "subscribe", symbol: newSymbol, from: -strikeRange, to: strikeRange }));
-    }
   };
 
   // ==================== Column Reorder ====================
@@ -570,9 +594,9 @@ export default function OptionChainPage() {
     >
       {/* ==================== HEADER ==================== */}
       <header className="sticky top-0 z-50 overflow-x-auto bg-[var(--bg-panel)] border-b border-[var(--border-color)] px-4 py-3">
-        <div className="flex min-w-max items-center justify-between gap-4">
+        <div className="flex min-w-full flex-wrap items-center justify-between gap-2 sm:flex-nowrap">
           {/* Symbol Dropdown */}
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-4">
             <div className="relative">
               <select
                 value={symbol}
@@ -589,7 +613,7 @@ export default function OptionChainPage() {
             </div>
             
             {/* Connection Status */}
-            <div className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium ${connected ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
+            <div role="status" aria-live="polite" className={`flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium ${connected ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}`}>
               <span className={`w-2 h-2 rounded-full ${connected ? "bg-green-400" : "bg-red-400"}`}></span>
               {connected ? "Live" : "Disconnected"}
             </div>
@@ -602,6 +626,7 @@ export default function OptionChainPage() {
           {/* Settings Button */}
           <button
             onClick={() => setSettingsOpen(true)}
+            aria-label="Open settings"
             className="p-2 rounded-lg bg-[var(--bg-panel-alt)] hover:bg-[var(--bg-hover)] transition-colors"
           >
             <Settings className="w-5 h-5" />
@@ -629,7 +654,7 @@ export default function OptionChainPage() {
             <tr>
               {/* CE Headers */}
               {visibleCeColumns.map(col => (
-                <th 
+                <th scope="col"
                   key={col.id}
                   className="text-center text-xs font-semibold uppercase tracking-wider text-red-500 border-b-2 border-red-500/30 bg-[var(--bg-panel)]"
                   style={{
@@ -646,7 +671,7 @@ export default function OptionChainPage() {
               ))}
               
               {/* Strike Header */}
-              <th
+              <th scope="col"
                 className="text-center text-xs font-semibold uppercase tracking-wider text-yellow-400 border-b-2 border-yellow-500/30 bg-[var(--bg-panel)]"
                 style={{
                   paddingTop: "calc(12px * var(--uf-height-scale, 1))",
@@ -660,7 +685,7 @@ export default function OptionChainPage() {
               
               {/* PE Headers */}
               {visiblePeColumns.map(col => (
-                <th 
+                <th scope="col"
                   key={col.id}
                   className="text-center text-xs font-semibold uppercase tracking-wider text-green-600 border-b-2 border-green-500/30 bg-[var(--bg-panel)]"
                   style={{
@@ -978,22 +1003,23 @@ export default function OptionChainPage() {
                 <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3">Rank Highlight Colors</h3>
                 <p className="text-xs text-[var(--text-muted)] mb-3">Rank 1 is always visible. Rank 2 and 3 highlights can be filtered by their cell percentage.</p>
                 <div className="grid sm:grid-cols-2 gap-3 mb-4">
-                  {([2, 3] as const).map(rank => {
-                    const enabledKey = rank === 2 ? "rank2Enabled" : "rank3Enabled";
-                    const thresholdKey = rank === 2 ? "rank2Threshold" : "rank3Threshold";
+                  {(["ce", "pe"] as const).flatMap(side => ([2, 3] as const).map(rank => {
+                    const enabledKey = `${side}Rank${rank}Enabled` as keyof RankVisibility;
+                    const thresholdKey = `${side}Rank${rank}Threshold` as keyof RankVisibility;
+                    const enabled = Boolean(rankVisibility[enabledKey]);
                     return (
-                      <div key={rank} className="bg-[var(--bg-panel-alt)] rounded-lg px-3 py-3">
+                      <div key={`${side}-${rank}`} className="bg-[var(--bg-panel-alt)] rounded-lg px-3 py-3">
                         <label className="flex items-center gap-2 cursor-pointer">
-                          <input type="checkbox" checked={rankVisibility[enabledKey]} onChange={(e) => setRankVisibility({ ...rankVisibility, [enabledKey]: e.target.checked })} className="w-4 h-4 accent-cyan-500" />
-                          <span className="text-sm font-medium">Show Rank {rank} (CE &amp; PE)</span>
+                          <input type="checkbox" checked={enabled} onChange={(e) => setRankVisibility({ ...rankVisibility, [enabledKey]: e.target.checked })} className="w-4 h-4 accent-cyan-500" />
+                          <span className="text-sm font-medium uppercase">{side} Rank {rank}</span>
                         </label>
-                        <label className={`block mt-3 ${rankVisibility[enabledKey] ? "" : "opacity-50"}`}>
+                        <label className={`block mt-3 ${enabled ? "" : "opacity-50"}`}>
                           <div className="flex justify-between text-xs text-[var(--text-secondary)] mb-1"><span>Minimum percentage</span><span>{rankVisibility[thresholdKey]}%</span></div>
-                          <input type="range" min={0} max={100} step={5} disabled={!rankVisibility[enabledKey]} value={rankVisibility[thresholdKey]} onChange={(e) => setRankVisibility({ ...rankVisibility, [thresholdKey]: parseInt(e.target.value, 10) })} className="w-full accent-cyan-500" />
+                          <input aria-label={`${side.toUpperCase()} Rank ${rank} minimum percentage`} type="range" min={0} max={100} step={5} disabled={!enabled} value={Number(rankVisibility[thresholdKey])} onChange={(e) => setRankVisibility({ ...rankVisibility, [thresholdKey]: parseInt(e.target.value, 10) })} className="w-full accent-cyan-500" />
                         </label>
                       </div>
                     );
-                  })}
+                  }))}
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
