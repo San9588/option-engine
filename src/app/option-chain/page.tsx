@@ -68,6 +68,7 @@ interface SavedSettings {
   ceColumns: ColumnConfig[];
   peColumns: ColumnConfig[];
   rankColors?: RankColors;
+  rankVisibility?: RankVisibility;
   theme?: ThemeMode;
   decorativeFont?: boolean; // legacy setting
   fontStyle?: FontStyle;
@@ -185,10 +186,24 @@ interface RankColors {
   pe1: string; pe2: string; pe3: string;
 }
 
+interface RankVisibility {
+  rank2Enabled: boolean;
+  rank2Threshold: number;
+  rank3Enabled: boolean;
+  rank3Threshold: number;
+}
+
 // CE: 1st=light red, 2nd=yellow, 3rd=light yellow | PE: 1st=green, 2nd=yellow, 3rd=light yellow
 const DEFAULT_RANK_COLORS: RankColors = {
   ce1: "#f87171", ce2: "#eab308", ce3: "#fde047",
   pe1: "#22c55e", pe2: "#eab308", pe3: "#fde047",
+};
+
+const DEFAULT_RANK_VISIBILITY: RankVisibility = {
+  rank2Enabled: true,
+  rank2Threshold: 75,
+  rank3Enabled: false,
+  rank3Threshold: 75,
 };
 
 const RANK_ALPHA: Record<number, number> = { 1: 0.85, 2: 0.55, 3: 0.35 };
@@ -201,10 +216,13 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-function getRankColor(rankStr: string, rankIndex: number, side: "ce" | "pe", colors: RankColors): string {
+function getRankColor(rankStr: string, rankIndex: number, side: "ce" | "pe", colors: RankColors, pctValue: unknown, visibility: RankVisibility): string {
   if (!rankStr || rankStr.length !== 3) return "";
   const rank = parseInt(rankStr[rankIndex], 10);
   if (!rank || rank < 1 || rank > 3) return "";
+  const percentage = typeof pctValue === "number" ? pctValue : 0;
+  if (rank === 2 && (!visibility.rank2Enabled || percentage <= visibility.rank2Threshold)) return "";
+  if (rank === 3 && (!visibility.rank3Enabled || percentage <= visibility.rank3Threshold)) return "";
 
   const base = side === "ce"
     ? [colors.ce1, colors.ce2, colors.ce3][rank - 1]
@@ -250,6 +268,7 @@ export default function OptionChainPage() {
   const [ceColumns, setCeColumns] = useState<ColumnConfig[]>(DEFAULT_CE_COLUMNS);
   const [peColumns, setPeColumns] = useState<ColumnConfig[]>(DEFAULT_PE_COLUMNS);
   const [rankColors, setRankColors] = useState<RankColors>(DEFAULT_RANK_COLORS);
+  const [rankVisibility, setRankVisibility] = useState<RankVisibility>(DEFAULT_RANK_VISIBILITY);
   const [theme, setTheme] = useState<ThemeMode>("light");
   const [fontStyle, setFontStyle] = useState<FontStyle>("system");
   const [fontScale, setFontScale] = useState(1);
@@ -283,6 +302,9 @@ export default function OptionChainPage() {
       if (saved.rankColors) {
         setRankColors({ ...DEFAULT_RANK_COLORS, ...saved.rankColors });
       }
+      if (saved.rankVisibility) {
+        setRankVisibility({ ...DEFAULT_RANK_VISIBILITY, ...saved.rankVisibility });
+      }
       setTheme(saved.theme === "dark" ? "dark" : "light");
       setFontStyle(saved.fontStyle || (saved.decorativeFont ? "sketch" : "system"));
       setFontScale(typeof saved.fontScale === "number" ? saved.fontScale : 1);
@@ -298,8 +320,8 @@ export default function OptionChainPage() {
   // ==================== Save Settings on Change ====================
   useEffect(() => {
     if (!settingsLoaded) return;
-    saveSettings({ symbol, reverseOrder, ceColumns, peColumns, rankColors, theme, fontStyle, fontScale, fontWeight, cellWidthScale, cellHeightScale, strikeRange });
-  }, [symbol, reverseOrder, ceColumns, peColumns, rankColors, theme, fontStyle, fontScale, fontWeight, cellWidthScale, cellHeightScale, strikeRange, settingsLoaded]);
+    saveSettings({ symbol, reverseOrder, ceColumns, peColumns, rankColors, rankVisibility, theme, fontStyle, fontScale, fontWeight, cellWidthScale, cellHeightScale, strikeRange });
+  }, [symbol, reverseOrder, ceColumns, peColumns, rankColors, rankVisibility, theme, fontStyle, fontScale, fontWeight, cellWidthScale, cellHeightScale, strikeRange, settingsLoaded]);
 
   // reverseOrder kept in a ref so the socket effect below doesn't need to
   // depend on it (that was reconnecting the socket - and racing a stale
@@ -426,7 +448,7 @@ export default function OptionChainPage() {
     const unitSuffix = col.unitKey ? (row[col.unitKey] as string) : "";
     const secondaryValue = col.secondaryKey ? row[col.secondaryKey] : null;
     const rankStr = side === "ce" ? row.ce_rank : row.pe_rank;
-    const rankColor = col.rankIndex !== undefined ? getRankColor(rankStr, col.rankIndex, side, rankColors) : "";
+    const rankColor = col.rankIndex !== undefined ? getRankColor(rankStr, col.rankIndex, side, rankColors, pctValue, rankVisibility) : "";
     
     const isSelected = selectedCell?.strike === row.strike && 
                        selectedCell?.column === col.id && 
@@ -724,9 +746,9 @@ export default function OptionChainPage() {
             })}
             {/* Permanent blank row, always attached directly below the final data row. */}
             <tr aria-label="Empty row" className="bg-[var(--bg-panel)]">
-              {visibleCeColumns.map(col => <td key={col.id} className="border-b border-[var(--border-color)]" style={{ height: "calc(44px * var(--uf-height-scale, 1))" }} />)}
-              <td className="border-x-2 border-b border-[var(--strike-border)] bg-[var(--bg-panel-alt)]" style={{ height: "calc(44px * var(--uf-height-scale, 1))" }} />
-              {visiblePeColumns.map(col => <td key={col.id} className="border-b border-[var(--border-color)]" style={{ height: "calc(44px * var(--uf-height-scale, 1))" }} />)}
+              {visibleCeColumns.map(col => <td key={col.id} className="border-b border-r border-[var(--border-color)]" style={{ height: "calc(36px * var(--uf-height-scale, 1))", padding: 0 }} />)}
+              <td className="border-x-2 border-b border-[var(--strike-border)] bg-[var(--bg-panel-alt)]" style={{ height: "calc(36px * var(--uf-height-scale, 1))", padding: 0 }} />
+              {visiblePeColumns.map(col => <td key={col.id} className="border-b border-r border-[var(--border-color)]" style={{ height: "calc(36px * var(--uf-height-scale, 1))", padding: 0 }} />)}
             </tr>
           </tbody>
         </table>
@@ -954,7 +976,25 @@ export default function OptionChainPage() {
               {/* Rank Colors */}
               <div>
                 <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3">Rank Highlight Colors</h3>
-                <p className="text-xs text-[var(--text-muted)] mb-3">Applies to the top-3 Vol / OI / Chng cells on each side.</p>
+                <p className="text-xs text-[var(--text-muted)] mb-3">Rank 1 is always visible. Rank 2 and 3 highlights can be filtered by their cell percentage.</p>
+                <div className="grid sm:grid-cols-2 gap-3 mb-4">
+                  {([2, 3] as const).map(rank => {
+                    const enabledKey = rank === 2 ? "rank2Enabled" : "rank3Enabled";
+                    const thresholdKey = rank === 2 ? "rank2Threshold" : "rank3Threshold";
+                    return (
+                      <div key={rank} className="bg-[var(--bg-panel-alt)] rounded-lg px-3 py-3">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={rankVisibility[enabledKey]} onChange={(e) => setRankVisibility({ ...rankVisibility, [enabledKey]: e.target.checked })} className="w-4 h-4 accent-cyan-500" />
+                          <span className="text-sm font-medium">Show Rank {rank} (CE &amp; PE)</span>
+                        </label>
+                        <label className={`block mt-3 ${rankVisibility[enabledKey] ? "" : "opacity-50"}`}>
+                          <div className="flex justify-between text-xs text-[var(--text-secondary)] mb-1"><span>Minimum percentage</span><span>{rankVisibility[thresholdKey]}%</span></div>
+                          <input type="range" min={0} max={100} step={5} disabled={!rankVisibility[enabledKey]} value={rankVisibility[thresholdKey]} onChange={(e) => setRankVisibility({ ...rankVisibility, [thresholdKey]: parseInt(e.target.value, 10) })} className="w-full accent-cyan-500" />
+                        </label>
+                      </div>
+                    );
+                  })}
+                </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <div className="text-xs font-medium text-red-500">CE side</div>
@@ -995,6 +1035,7 @@ export default function OptionChainPage() {
                     setPeColumns(DEFAULT_PE_COLUMNS);
                     setReverseOrder(true);
                     setRankColors(DEFAULT_RANK_COLORS);
+                    setRankVisibility(DEFAULT_RANK_VISIBILITY);
                     setTheme("light");
                     setFontStyle("system");
                     setFontScale(1);
