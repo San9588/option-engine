@@ -60,6 +60,7 @@ interface ColumnConfig {
 }
 
 type ThemeMode = "light" | "dark";
+type FontStyle = "system" | "sketch" | "serif" | "mono";
 
 interface SavedSettings {
   symbol: string;
@@ -68,10 +69,13 @@ interface SavedSettings {
   peColumns: ColumnConfig[];
   rankColors?: RankColors;
   theme?: ThemeMode;
-  decorativeFont?: boolean;
+  decorativeFont?: boolean; // legacy setting
+  fontStyle?: FontStyle;
   fontScale?: number;
   fontWeight?: number;
-  cellScale?: number;
+  cellScale?: number; // legacy combined setting
+  cellWidthScale?: number;
+  cellHeightScale?: number;
   strikeRange?: number;
 }
 
@@ -94,7 +98,11 @@ const DEFAULT_PE_COLUMNS: ColumnConfig[] = [
   { id: "pe_iv_delta", label: "IV / Delta", shortLabel: "IV/Δ", dataKey: "pe_iv", secondaryKey: "pe_delta", visible: true, width: 70 },
 ];
 
-const SYMBOLS = ["NIFTY", "BANKNIFTY", "SENSEX", "CRUDEOIL"];
+const SYMBOL_GROUPS = [
+  { category: "NSE", symbols: ["NIFTY", "BANKNIFTY"] },
+  { category: "BSE", symbols: ["SENSEX"] },
+  { category: "MCX", symbols: ["CRUDEOIL"] },
+];
 
 // ==================== HELPER: Decode meta_pack (mirrors engine.py _pack_meta) ====================
 const UNIT_SUFFIX = ["", "K", "M", "B"];
@@ -243,10 +251,11 @@ export default function OptionChainPage() {
   const [peColumns, setPeColumns] = useState<ColumnConfig[]>(DEFAULT_PE_COLUMNS);
   const [rankColors, setRankColors] = useState<RankColors>(DEFAULT_RANK_COLORS);
   const [theme, setTheme] = useState<ThemeMode>("light");
-  const [decorativeFont, setDecorativeFont] = useState(false);
+  const [fontStyle, setFontStyle] = useState<FontStyle>("system");
   const [fontScale, setFontScale] = useState(1);
   const [fontWeight, setFontWeight] = useState(700);
-  const [cellScale, setCellScale] = useState(1);
+  const [cellWidthScale, setCellWidthScale] = useState(1);
+  const [cellHeightScale, setCellHeightScale] = useState(1);
   const [strikeRange, setStrikeRange] = useState(15);
   const [selectedCell, setSelectedCell] = useState<{strike: number; column: string; side: "ce" | "pe"} | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -275,10 +284,12 @@ export default function OptionChainPage() {
         setRankColors({ ...DEFAULT_RANK_COLORS, ...saved.rankColors });
       }
       setTheme(saved.theme === "dark" ? "dark" : "light");
-      setDecorativeFont(!!saved.decorativeFont);
+      setFontStyle(saved.fontStyle || (saved.decorativeFont ? "sketch" : "system"));
       setFontScale(typeof saved.fontScale === "number" ? saved.fontScale : 1);
       setFontWeight(typeof saved.fontWeight === "number" ? saved.fontWeight : 700);
-      setCellScale(typeof saved.cellScale === "number" ? saved.cellScale : 1);
+      const legacyCellScale = typeof saved.cellScale === "number" ? saved.cellScale : 1;
+      setCellWidthScale(typeof saved.cellWidthScale === "number" ? saved.cellWidthScale : legacyCellScale);
+      setCellHeightScale(typeof saved.cellHeightScale === "number" ? saved.cellHeightScale : legacyCellScale);
       setStrikeRange(saved.strikeRange === 30 ? 30 : 15);
     }
     setSettingsLoaded(true);
@@ -287,8 +298,8 @@ export default function OptionChainPage() {
   // ==================== Save Settings on Change ====================
   useEffect(() => {
     if (!settingsLoaded) return;
-    saveSettings({ symbol, reverseOrder, ceColumns, peColumns, rankColors, theme, decorativeFont, fontScale, fontWeight, cellScale, strikeRange });
-  }, [symbol, reverseOrder, ceColumns, peColumns, rankColors, theme, decorativeFont, fontScale, fontWeight, cellScale, strikeRange, settingsLoaded]);
+    saveSettings({ symbol, reverseOrder, ceColumns, peColumns, rankColors, theme, fontStyle, fontScale, fontWeight, cellWidthScale, cellHeightScale, strikeRange });
+  }, [symbol, reverseOrder, ceColumns, peColumns, rankColors, theme, fontStyle, fontScale, fontWeight, cellWidthScale, cellHeightScale, strikeRange, settingsLoaded]);
 
   // reverseOrder kept in a ref so the socket effect below doesn't need to
   // depend on it (that was reconnecting the socket - and racing a stale
@@ -434,12 +445,12 @@ export default function OptionChainPage() {
             text-[var(--text-primary)]
           `}
           style={{
-            width: `calc(${col.width}px * var(--uf-cell-scale, 1))`,
-            minWidth: `calc(${col.width}px * var(--uf-cell-scale, 1))`,
-            paddingTop: "calc(6px * var(--uf-cell-scale, 1))",
-            paddingBottom: "calc(6px * var(--uf-cell-scale, 1))",
-            paddingLeft: "calc(8px * var(--uf-cell-scale, 1))",
-            paddingRight: "calc(8px * var(--uf-cell-scale, 1))",
+            width: `calc(${col.width}px * var(--uf-width-scale, 1))`,
+            minWidth: `calc(${col.width}px * var(--uf-width-scale, 1))`,
+            paddingTop: "calc(6px * var(--uf-height-scale, 1))",
+            paddingBottom: "calc(6px * var(--uf-height-scale, 1))",
+            paddingLeft: "calc(8px * var(--uf-width-scale, 1))",
+            paddingRight: "calc(8px * var(--uf-width-scale, 1))",
           }}
         >
           <div className="flex flex-col items-center leading-tight gap-0.5">
@@ -467,12 +478,12 @@ export default function OptionChainPage() {
             text-[var(--text-primary)]
           `}
           style={{
-            width: `calc(${col.width}px * var(--uf-cell-scale, 1))`,
-            minWidth: `calc(${col.width}px * var(--uf-cell-scale, 1))`,
-            paddingTop: "calc(6px * var(--uf-cell-scale, 1))",
-            paddingBottom: "calc(6px * var(--uf-cell-scale, 1))",
-            paddingLeft: "calc(8px * var(--uf-cell-scale, 1))",
-            paddingRight: "calc(8px * var(--uf-cell-scale, 1))",
+            width: `calc(${col.width}px * var(--uf-width-scale, 1))`,
+            minWidth: `calc(${col.width}px * var(--uf-width-scale, 1))`,
+            paddingTop: "calc(6px * var(--uf-height-scale, 1))",
+            paddingBottom: "calc(6px * var(--uf-height-scale, 1))",
+            paddingLeft: "calc(8px * var(--uf-width-scale, 1))",
+            paddingRight: "calc(8px * var(--uf-width-scale, 1))",
             backgroundColor: rankColor || undefined,
             color: rankColor ? "#111827" : undefined,
           }}
@@ -501,12 +512,12 @@ export default function OptionChainPage() {
           text-[var(--text-primary)]
         `}
         style={{
-          width: `calc(${col.width}px * var(--uf-cell-scale, 1))`,
-          minWidth: `calc(${col.width}px * var(--uf-cell-scale, 1))`,
-          paddingTop: "calc(6px * var(--uf-cell-scale, 1))",
-          paddingBottom: "calc(6px * var(--uf-cell-scale, 1))",
-          paddingLeft: "calc(8px * var(--uf-cell-scale, 1))",
-          paddingRight: "calc(8px * var(--uf-cell-scale, 1))",
+          width: `calc(${col.width}px * var(--uf-width-scale, 1))`,
+          minWidth: `calc(${col.width}px * var(--uf-width-scale, 1))`,
+          paddingTop: "calc(6px * var(--uf-height-scale, 1))",
+          paddingBottom: "calc(6px * var(--uf-height-scale, 1))",
+          paddingLeft: "calc(8px * var(--uf-width-scale, 1))",
+          paddingRight: "calc(8px * var(--uf-width-scale, 1))",
         }}
       >
         <span style={{ fontSize: "calc(14px * var(--uf-scale, 1))", fontWeight: "var(--uf-weight, 700)" }}>
@@ -532,22 +543,24 @@ export default function OptionChainPage() {
   return (
     <div
       data-theme={theme}
-      className={`min-h-screen bg-[var(--bg-page)] text-[var(--text-primary)] ${decorativeFont ? "font-sketch" : ""}`}
-      style={{ "--uf-scale": fontScale, "--uf-weight": fontWeight, "--uf-cell-scale": cellScale } as React.CSSProperties}
+      className={`min-h-screen bg-[var(--bg-page)] text-[var(--text-primary)] ${fontStyle === "sketch" ? "font-sketch" : fontStyle === "serif" ? "font-serif-ui" : fontStyle === "mono" ? "font-mono-ui" : ""}`}
+      style={{ "--uf-scale": fontScale, "--uf-weight": fontWeight, "--uf-width-scale": cellWidthScale, "--uf-height-scale": cellHeightScale } as React.CSSProperties}
     >
       {/* ==================== HEADER ==================== */}
-      <header className="sticky top-0 z-50 bg-[var(--bg-panel)] border-b border-[var(--border-color)] px-4 py-3">
-        <div className="flex items-center justify-between max-w-full">
+      <header className="sticky top-0 z-50 overflow-x-auto bg-[var(--bg-panel)] border-b border-[var(--border-color)] px-4 py-3">
+        <div className="flex min-w-max items-center justify-between gap-4">
           {/* Symbol Dropdown */}
           <div className="flex items-center gap-4">
             <div className="relative">
               <select
                 value={symbol}
                 onChange={(e) => handleSymbolChange(e.target.value)}
-                className="appearance-none bg-[var(--bg-panel-alt)] text-[var(--text-primary)] px-4 py-2 pr-10 rounded-lg font-semibold text-lg cursor-pointer hover:bg-[var(--bg-hover)] transition-colors"
+                className="appearance-none w-auto max-w-[11rem] bg-[var(--bg-panel-alt)] text-[var(--text-primary)] pl-3 pr-8 py-2 rounded-lg font-semibold text-base cursor-pointer hover:bg-[var(--bg-hover)] transition-colors"
               >
-                {SYMBOLS.map(s => (
-                  <option key={s} value={s}>{s}</option>
+                {SYMBOL_GROUPS.map(group => (
+                  <optgroup key={group.category} label={group.category}>
+                    {group.symbols.map(s => <option key={s} value={s}>{s}</option>)}
+                  </optgroup>
                 ))}
               </select>
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 pointer-events-none text-[var(--text-secondary)]" />
@@ -560,7 +573,7 @@ export default function OptionChainPage() {
             </div>
             
             {timestamp && (
-              <span className="text-xs text-[var(--text-secondary)] hidden sm:inline">{timestamp}</span>
+              <span className="text-xs text-[var(--text-secondary)] whitespace-nowrap">{timestamp}</span>
             )}
           </div>
 
@@ -580,7 +593,15 @@ export default function OptionChainPage() {
         className="overflow-auto"
         style={{ height: "calc(100vh - 64px)" }}
       >
-        <table className="w-full border-collapse">
+        <table
+          className="table-fixed border-collapse"
+          style={{ width: `max(100%, calc(${visibleCeColumns.reduce((sum, col) => sum + col.width, 0) + 90 + visiblePeColumns.reduce((sum, col) => sum + col.width, 0)}px * var(--uf-width-scale, 1)))` }}
+        >
+          <colgroup>
+            {visibleCeColumns.map(col => <col key={col.id} style={{ width: `calc(${col.width}px * var(--uf-width-scale, 1))` }} />)}
+            <col style={{ width: "calc(90px * var(--uf-width-scale, 1))" }} />
+            {visiblePeColumns.map(col => <col key={col.id} style={{ width: `calc(${col.width}px * var(--uf-width-scale, 1))` }} />)}
+          </colgroup>
           {/* Column Headers - Sticky */}
           <thead className="sticky top-0 z-40 bg-[var(--bg-panel)]">
             <tr>
@@ -590,12 +611,12 @@ export default function OptionChainPage() {
                   key={col.id}
                   className="text-center text-xs font-semibold uppercase tracking-wider text-red-500 border-b-2 border-red-500/30 bg-[var(--bg-panel)]"
                   style={{
-                    width: `calc(${col.width}px * var(--uf-cell-scale, 1))`,
-                    minWidth: `calc(${col.width}px * var(--uf-cell-scale, 1))`,
-                    paddingTop: "calc(12px * var(--uf-cell-scale, 1))",
-                    paddingBottom: "calc(12px * var(--uf-cell-scale, 1))",
-                    paddingLeft: "calc(8px * var(--uf-cell-scale, 1))",
-                    paddingRight: "calc(8px * var(--uf-cell-scale, 1))",
+                    width: `calc(${col.width}px * var(--uf-width-scale, 1))`,
+                    minWidth: `calc(${col.width}px * var(--uf-width-scale, 1))`,
+                    paddingTop: "calc(12px * var(--uf-height-scale, 1))",
+                    paddingBottom: "calc(12px * var(--uf-height-scale, 1))",
+                    paddingLeft: "calc(8px * var(--uf-width-scale, 1))",
+                    paddingRight: "calc(8px * var(--uf-width-scale, 1))",
                   }}
                 >
                   {col.shortLabel}
@@ -606,10 +627,10 @@ export default function OptionChainPage() {
               <th
                 className="text-center text-xs font-semibold uppercase tracking-wider text-yellow-400 border-b-2 border-yellow-500/30 bg-[var(--bg-panel)]"
                 style={{
-                  paddingTop: "calc(12px * var(--uf-cell-scale, 1))",
-                  paddingBottom: "calc(12px * var(--uf-cell-scale, 1))",
-                  paddingLeft: "calc(16px * var(--uf-cell-scale, 1))",
-                  paddingRight: "calc(16px * var(--uf-cell-scale, 1))",
+                  paddingTop: "calc(12px * var(--uf-height-scale, 1))",
+                  paddingBottom: "calc(12px * var(--uf-height-scale, 1))",
+                  paddingLeft: "calc(16px * var(--uf-width-scale, 1))",
+                  paddingRight: "calc(16px * var(--uf-width-scale, 1))",
                 }}
               >
                 Strike
@@ -621,12 +642,12 @@ export default function OptionChainPage() {
                   key={col.id}
                   className="text-center text-xs font-semibold uppercase tracking-wider text-green-600 border-b-2 border-green-500/30 bg-[var(--bg-panel)]"
                   style={{
-                    width: `calc(${col.width}px * var(--uf-cell-scale, 1))`,
-                    minWidth: `calc(${col.width}px * var(--uf-cell-scale, 1))`,
-                    paddingTop: "calc(12px * var(--uf-cell-scale, 1))",
-                    paddingBottom: "calc(12px * var(--uf-cell-scale, 1))",
-                    paddingLeft: "calc(8px * var(--uf-cell-scale, 1))",
-                    paddingRight: "calc(8px * var(--uf-cell-scale, 1))",
+                    width: `calc(${col.width}px * var(--uf-width-scale, 1))`,
+                    minWidth: `calc(${col.width}px * var(--uf-width-scale, 1))`,
+                    paddingTop: "calc(12px * var(--uf-height-scale, 1))",
+                    paddingBottom: "calc(12px * var(--uf-height-scale, 1))",
+                    paddingLeft: "calc(8px * var(--uf-width-scale, 1))",
+                    paddingRight: "calc(8px * var(--uf-width-scale, 1))",
                   }}
                 >
                   {col.shortLabel}
@@ -653,7 +674,7 @@ export default function OptionChainPage() {
                         className="py-3 text-center border-b border-[var(--border-color)]"
                       >
                         <div className="flex items-center justify-center gap-4 sm:gap-6">
-                          <span className="text-[var(--text-primary)] text-base sm:text-lg font-bold hidden sm:inline">Spot Price</span>
+                          <span className="text-[var(--text-primary)] text-sm sm:text-lg font-bold whitespace-nowrap">{symbol === "CRUDEOIL" ? "Future Price" : "Spot Price"}</span>
                           <span className="text-xl sm:text-2xl font-bold text-[var(--text-primary)]">
                             {spotPrice.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
                           </span>
@@ -685,10 +706,10 @@ export default function OptionChainPage() {
                       style={{
                         fontSize: "calc(16px * var(--uf-scale, 1))",
                         fontWeight: "var(--uf-weight, 700)",
-                        paddingTop: "calc(8px * var(--uf-cell-scale, 1))",
-                        paddingBottom: "calc(8px * var(--uf-cell-scale, 1))",
-                        paddingLeft: "calc(16px * var(--uf-cell-scale, 1))",
-                        paddingRight: "calc(16px * var(--uf-cell-scale, 1))",
+                        paddingTop: "calc(8px * var(--uf-height-scale, 1))",
+                        paddingBottom: "calc(8px * var(--uf-height-scale, 1))",
+                        paddingLeft: "calc(16px * var(--uf-width-scale, 1))",
+                        paddingRight: "calc(16px * var(--uf-width-scale, 1))",
                       }}
                     >
                       {row.strike}
@@ -701,6 +722,12 @@ export default function OptionChainPage() {
                 </React.Fragment>
               );
             })}
+            {/* Permanent blank row, always attached directly below the final data row. */}
+            <tr aria-label="Empty row" className="bg-[var(--bg-panel)]">
+              {visibleCeColumns.map(col => <td key={col.id} className="border-b border-[var(--border-color)]" style={{ height: "calc(44px * var(--uf-height-scale, 1))" }} />)}
+              <td className="border-x-2 border-b border-[var(--strike-border)] bg-[var(--bg-panel-alt)]" style={{ height: "calc(44px * var(--uf-height-scale, 1))" }} />
+              {visiblePeColumns.map(col => <td key={col.id} className="border-b border-[var(--border-color)]" style={{ height: "calc(44px * var(--uf-height-scale, 1))" }} />)}
+            </tr>
           </tbody>
         </table>
       </div>
@@ -802,40 +829,30 @@ export default function OptionChainPage() {
                     />
                   </div>
 
-                  <label className="flex items-center gap-3 bg-[var(--bg-panel-alt)] rounded-lg px-4 py-3 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={decorativeFont}
-                      onChange={(e) => setDecorativeFont(e.target.checked)}
-                      className="w-4 h-4 rounded border-[var(--border-color)] text-cyan-500 focus:ring-cyan-500"
-                    />
-                    <div className="flex-1">
-                      <div className="text-sm font-medium">Decorative sketch font</div>
-                      <div className="text-xs text-[var(--text-secondary)] mt-1">Optional handwritten-style font. Off by default. Size/boldness above still apply.</div>
-                    </div>
-                  </label>
+                  <div className="bg-[var(--bg-panel-alt)] rounded-lg px-4 py-3">
+                    <div className="text-sm font-medium mb-2">Font Style</div>
+                    <select value={fontStyle} onChange={(e) => setFontStyle(e.target.value as FontStyle)} className="w-full bg-[var(--bg-panel)] border border-[var(--border-color)] rounded-lg px-3 py-2">
+                      <option value="system">System (Default)</option>
+                      <option value="sketch">Caveat / Sketch</option>
+                      <option value="serif">Georgia / Serif</option>
+                      <option value="mono">Monospace</option>
+                    </select>
+                  </div>
                 </div>
               </div>
 
-              {/* Cell Size: width + height scale together, so structure never breaks */}
+              {/* Cell width and row height are independently adjustable. */}
               <div>
                 <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3">Cell Size</h3>
-                <div className="bg-[var(--bg-panel-alt)] rounded-lg px-4 py-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium">Width &amp; Height</span>
-                    <span className="text-xs text-[var(--text-secondary)]">{Math.round(cellScale * 100)}%{cellScale === 1 ? " (Default)" : ""}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0.8}
-                    max={1.4}
-                    step={0.05}
-                    value={cellScale}
-                    onChange={(e) => setCellScale(parseFloat(e.target.value))}
-                    className="w-full accent-cyan-500"
-                  />
-                  <div className="text-xs text-[var(--text-secondary)] mt-1">All columns and rows scale together, so the table layout never gets lopsided.</div>
+                <div className="space-y-3">
+                  {([ ["Width", cellWidthScale, setCellWidthScale], ["Height", cellHeightScale, setCellHeightScale] ] as const).map(([label, value, setter]) => (
+                    <div key={label} className="bg-[var(--bg-panel-alt)] rounded-lg px-4 py-3">
+                      <div className="flex items-center justify-between mb-2"><span className="text-sm font-medium">{label}</span><span className="text-xs text-[var(--text-secondary)]">{Math.round(value * 100)}%</span></div>
+                      <input type="range" min={0.6} max={1.8} step={0.1} value={value} onChange={(e) => setter(parseFloat(e.target.value))} className="w-full accent-cyan-500" />
+                    </div>
+                  ))}
                 </div>
+                <div className="text-xs text-[var(--text-secondary)] mt-2">Strike column stays proportional to the other columns at every width.</div>
               </div>
 
               {/* Number of strikes loaded from the server */}
@@ -979,10 +996,11 @@ export default function OptionChainPage() {
                     setReverseOrder(true);
                     setRankColors(DEFAULT_RANK_COLORS);
                     setTheme("light");
-                    setDecorativeFont(false);
+                    setFontStyle("system");
                     setFontScale(1);
                     setFontWeight(700);
-                    setCellScale(1);
+                    setCellWidthScale(1);
+                    setCellHeightScale(1);
                     setStrikeRange(15);
                   }}
                   className="px-4 py-2 text-sm bg-red-600/20 text-red-400 rounded-lg hover:bg-red-600/30 transition-colors"

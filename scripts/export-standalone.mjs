@@ -176,7 +176,8 @@ const html = `<!DOCTYPE html>
     --row-alt-pe: rgba(22, 163, 74, 0.06);
     --uf-scale: 1;
     --uf-weight: 700;
-    --uf-cell-scale: 1;
+    --uf-width-scale: 1;
+    --uf-height-scale: 1;
   }
   [data-theme="dark"] {
     --bg-page: #0f172a;
@@ -192,6 +193,8 @@ const html = `<!DOCTYPE html>
     --row-alt-pe: rgba(20, 83, 45, 0.18);
   }
   .font-sketch, .font-sketch * { font-family: "Caveat", cursive !important; }
+  .font-serif-ui, .font-serif-ui * { font-family: Georgia, "Times New Roman", serif !important; }
+  .font-mono-ui, .font-mono-ui * { font-family: "Courier New", ui-monospace, monospace !important; }
 </style>
 </head>
 <body>
