@@ -168,13 +168,15 @@ const html = `<!DOCTYPE html>
     --bg-panel-alt: #f1f5f9;
     --bg-hover: #e2e8f0;
     --border-color: #cbd5e1;
+    --strike-border: #d97706;
     --text-primary: #0f172a;
     --text-secondary: #475569;
     --text-muted: #94a3b8;
-    --cell-ce-text: #991b1b;
-    --cell-pe-text: #166534;
     --row-alt-ce: rgba(220, 38, 38, 0.06);
     --row-alt-pe: rgba(22, 163, 74, 0.06);
+    --uf-scale: 1;
+    --uf-weight: 700;
+    --uf-cell-scale: 1;
   }
   [data-theme="dark"] {
     --bg-page: #0f172a;
@@ -182,11 +184,10 @@ const html = `<!DOCTYPE html>
     --bg-panel-alt: rgba(51, 65, 85, 0.5);
     --bg-hover: #334155;
     --border-color: #334155;
+    --strike-border: #f59e0b;
     --text-primary: #f8fafc;
     --text-secondary: #94a3b8;
     --text-muted: #64748b;
-    --cell-ce-text: #fca5a5;
-    --cell-pe-text: #86efac;
     --row-alt-ce: rgba(127, 29, 29, 0.18);
     --row-alt-pe: rgba(20, 83, 45, 0.18);
   }
