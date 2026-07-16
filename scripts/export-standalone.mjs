@@ -7,11 +7,11 @@
  *   - src/app/option-chain/page.tsx ko padhta hai
  *   - Next.js/npm-specific cheezein (imports, "use client", process.env)
  *     hata/replace karta hai
- *   - Ek single, self-contained standalone-export/index.html banata hai jo
- *     React + ReactDOM + Babel-standalone + Tailwind ko CDN se load karta hai
- *     aur TSX ko browser mein hi (on-the-fly) transform karke chalata hai.
+ *   - esbuild se TSX ko export-time par optimized JavaScript mein compile karta hai
+ *   - Ek single standalone-export/index.html banata hai jo React + ReactDOM +
+ *     Tailwind ko CDN se load karta hai; browser mein Babel/runtime compilation nahi hoti.
  *
- * Kaise chalayein (zero npm install; sirf Node.js chahiye):
+ * Kaise chalayein (project dependencies install honi chahiye):
  *   node scripts/export-standalone.mjs
  *
  * Result:
@@ -26,6 +26,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { transform } from "esbuild";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..");
@@ -50,7 +51,7 @@ let code = fs.readFileSync(SOURCE_FILE, "utf8");
 
 // ---------------------------------------------------------------------------
 // 1. Strip Next.js-specific / module-only syntax that a plain <script type="text/babel">
-//    tag can't handle (Babel-standalone in classic-script mode doesn't rewrite
+//    tag can't handle (the previous browser compiler in classic-script mode doesn't rewrite
 //    import/export - so we remove them ourselves and wire up equivalents).
 // ---------------------------------------------------------------------------
 
@@ -86,6 +87,16 @@ if (code.includes("import ") || code.includes("export ")) {
     "The exported page.tsx may have changed shape since this script was written - check standalone-export/index.html output manually."
   );
 }
+
+// Compile TSX once during export. This removes Babel and the expensive
+// in-browser TypeScript/JSX transform from every standalone page load.
+const compiled = await transform(code, {
+  loader: "tsx",
+  jsx: "transform",
+  target: "es2017",
+  minify: true,
+  legalComments: "none",
+});
 
 // ---------------------------------------------------------------------------
 // 2. Minimal inline icon components (stand-ins for the lucide-react icons
@@ -147,9 +158,6 @@ const html = `<!DOCTYPE html>
 <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 
-<!-- Babel standalone: transforms JSX/TSX to JS right in the browser -->
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
 <!-- Tailwind CDN (play build) - same utility classes the app already uses -->
 <script src="https://cdn.tailwindcss.com"></script>
 
@@ -206,63 +214,14 @@ const html = `<!DOCTYPE html>
   <script>window.NEXT_PUBLIC_WS_URL = "ws://YOUR_HOST:8788/ws";</script>
 -->
 
-<script type="text/plain" id="app-source">
-${code.replace(/<\/script/g, "<\\/script")}
-</script>
-
 <script>
 ${ICONS_SNIPPET}
-
-console.log("%c[standalone-export] build: ${new Date().toISOString()}", "color:#22c55e;font-weight:bold");
-
+console.log("%c[standalone-export] precompiled build: ${new Date().toISOString()}", "color:#22c55e;font-weight:bold");
 const DEFAULT_WS_FALLBACK = ${JSON.stringify(DEFAULT_WS_URL)};
 window.NEXT_PUBLIC_WS_URL = window.NEXT_PUBLIC_WS_URL || DEFAULT_WS_FALLBACK;
-
-// Explicit Babel.transform() call (instead of the automatic
-// <script type="text/babel"> tag-scanner) so the "typescript" preset is
-// guaranteed to run - the tag-scanner was silently skipping it and failing
-// on plain TS syntax like "interface X {".
-const __source = document.getElementById("app-source").textContent;
-
-function __showFatalError(err) {
-  console.error("[standalone-export] FAILED:", err);
-  document.getElementById("root").innerHTML =
-    '<pre style="color:#f87171;padding:20px;white-space:pre-wrap;font-size:13px;line-height:1.5;">' +
-    "Build/transform failed - screenshot this:\\n\\n" +
-    (err && err.stack ? err.stack : String(err)) +
-    "</pre>";
-}
-
-try {
-  if (typeof React === "undefined" || typeof ReactDOM === "undefined") {
-    throw new Error("React/ReactDOM didn't load from CDN - check the network errors above (internet access needed once).");
-  }
-  if (typeof Babel === "undefined") {
-    throw new Error("Babel didn't load from CDN - check the network errors above (internet access needed once).");
-  }
-
-  const __result = Babel.transform(__source, {
-    presets: [["react", { runtime: "classic" }], "typescript"],
-    filename: "option-chain-page.tsx",
-  });
-  console.log("[standalone-export] babel transform OK, output chars:", __result.code.length);
-
-  if (/^\\s*(import|export)\\s/m.test(__result.code)) {
-    throw new Error(
-      "Babel's output still contains an import/export statement (probably an auto-inserted " +
-      "jsx-runtime import). This eval()-based runner can't execute ES modules. " +
-      "Raw output preview:\\n\\n" + __result.code.slice(0, 500)
-    );
-  }
-
-  // eslint-disable-next-line no-eval
-  (0, eval)(__result.code);
-
-  const root = ReactDOM.createRoot(document.getElementById("root"));
-  root.render(React.createElement(OptionChainPage));
-} catch (err) {
-  __showFatalError(err);
-}
+${compiled.code.replace(/<\/script/g, "<\\/script")}
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(React.createElement(OptionChainPage));
 </script>
 </body>
 </html>
@@ -277,5 +236,5 @@ console.log(`\nOpen it directly in a browser (double-click, or:`);
 console.log(`  open standalone-export/index.html      # macOS`);
 console.log(`  start standalone-export\\index.html      # Windows`);
 console.log(`  xdg-open standalone-export/index.html   # Linux`);
-console.log(`\nNo "npm install" needed. Internet access is needed once, to load`);
-console.log(`React/Babel/Tailwind from CDN when the page opens.\n`);
+console.log(`\nThe export is precompiled with esbuild. Internet access is needed once, to load`);
+console.log(`React and Tailwind from CDN when the page opens.\n`);
