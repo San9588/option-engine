@@ -193,10 +193,8 @@ interface RankColors {
 }
 
 interface RankVisibility {
-  ceRank2Enabled: boolean; ceRank2Threshold: number;
-  peRank2Enabled: boolean; peRank2Threshold: number;
-  ceRank3Enabled: boolean; ceRank3Threshold: number;
-  peRank3Enabled: boolean; peRank3Threshold: number;
+  rank2Enabled: boolean; rank2Threshold: number;
+  rank3Enabled: boolean; rank3Threshold: number;
 }
 // CE: 1st=light red, 2nd=yellow, 3rd=light yellow | PE: 1st=green, 2nd=yellow, 3rd=light yellow
 const DEFAULT_RANK_COLORS: RankColors = {
@@ -205,10 +203,8 @@ const DEFAULT_RANK_COLORS: RankColors = {
 };
 
 const DEFAULT_RANK_VISIBILITY: RankVisibility = {
-  ceRank2Enabled: true, ceRank2Threshold: 75,
-  peRank2Enabled: true, peRank2Threshold: 75,
-  ceRank3Enabled: false, ceRank3Threshold: 75,
-  peRank3Enabled: false, peRank3Threshold: 75,
+  rank2Enabled: true, rank2Threshold: 75,
+  rank3Enabled: false, rank3Threshold: 75,
 };
 
 const RANK_ALPHA: Record<number, number> = { 1: 0.85, 2: 0.55, 3: 0.35 };
@@ -226,9 +222,9 @@ function getRankColor(rankStr: string, rankIndex: number, side: "ce" | "pe", col
   const rank = parseInt(rankStr[rankIndex], 10);
   if (!rank || rank < 1 || rank > 3) return "";
   const percentage = typeof pctValue === "number" ? pctValue : 0;
-  const enabled = visibility[`${side}Rank${rank}Enabled` as keyof RankVisibility];
-  const threshold = visibility[`${side}Rank${rank}Threshold` as keyof RankVisibility];
-  if ((rank === 2 || rank === 3) && (!enabled || percentage <= Number(threshold))) return "";
+  const enabled = rank === 2 ? visibility.rank2Enabled : visibility.rank3Enabled;
+  const threshold = rank === 2 ? visibility.rank2Threshold : visibility.rank3Threshold;
+  if ((rank === 2 || rank === 3) && (!enabled || percentage <= threshold)) return "";
 
   const base = side === "ce"
     ? [colors.ce1, colors.ce2, colors.ce3][rank - 1]
@@ -310,17 +306,15 @@ export default function OptionChainPage() {
         setRankColors({ ...DEFAULT_RANK_COLORS, ...saved.rankColors });
       }
       if (saved.rankVisibility) {
-        const legacy = saved.rankVisibility as RankVisibility & { rank2Enabled?: boolean; rank2Threshold?: number; rank3Enabled?: boolean; rank3Threshold?: number };
+        const legacy = saved.rankVisibility as RankVisibility & {
+          ceRank2Enabled?: boolean; ceRank2Threshold?: number; peRank2Enabled?: boolean; peRank2Threshold?: number;
+          ceRank3Enabled?: boolean; ceRank3Threshold?: number; peRank3Enabled?: boolean; peRank3Threshold?: number;
+        };
         setRankVisibility({
-          ...DEFAULT_RANK_VISIBILITY,
-          ceRank2Enabled: legacy.ceRank2Enabled ?? legacy.rank2Enabled ?? true,
-          peRank2Enabled: legacy.peRank2Enabled ?? legacy.rank2Enabled ?? true,
-          ceRank2Threshold: legacy.ceRank2Threshold ?? legacy.rank2Threshold ?? 75,
-          peRank2Threshold: legacy.peRank2Threshold ?? legacy.rank2Threshold ?? 75,
-          ceRank3Enabled: legacy.ceRank3Enabled ?? legacy.rank3Enabled ?? false,
-          peRank3Enabled: legacy.peRank3Enabled ?? legacy.rank3Enabled ?? false,
-          ceRank3Threshold: legacy.ceRank3Threshold ?? legacy.rank3Threshold ?? 75,
-          peRank3Threshold: legacy.peRank3Threshold ?? legacy.rank3Threshold ?? 75,
+          rank2Enabled: legacy.rank2Enabled ?? legacy.ceRank2Enabled ?? legacy.peRank2Enabled ?? true,
+          rank2Threshold: legacy.rank2Threshold ?? legacy.ceRank2Threshold ?? legacy.peRank2Threshold ?? 75,
+          rank3Enabled: legacy.rank3Enabled ?? legacy.ceRank3Enabled ?? legacy.peRank3Enabled ?? false,
+          rank3Threshold: legacy.rank3Threshold ?? legacy.ceRank3Threshold ?? legacy.peRank3Threshold ?? 75,
         });
       }
       setTheme(saved.theme === "dark" ? "dark" : "light");
@@ -1003,23 +997,23 @@ export default function OptionChainPage() {
                 <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3">Rank Highlight Colors</h3>
                 <p className="text-xs text-[var(--text-muted)] mb-3">Rank 1 is always visible. Rank 2 and 3 highlights can be filtered by their cell percentage.</p>
                 <div className="grid sm:grid-cols-2 gap-3 mb-4">
-                  {(["ce", "pe"] as const).flatMap(side => ([2, 3] as const).map(rank => {
-                    const enabledKey = `${side}Rank${rank}Enabled` as keyof RankVisibility;
-                    const thresholdKey = `${side}Rank${rank}Threshold` as keyof RankVisibility;
+                  {([2, 3] as const).map(rank => {
+                    const enabledKey = `rank${rank}Enabled` as keyof RankVisibility;
+                    const thresholdKey = `rank${rank}Threshold` as keyof RankVisibility;
                     const enabled = Boolean(rankVisibility[enabledKey]);
                     return (
-                      <div key={`${side}-${rank}`} className="bg-[var(--bg-panel-alt)] rounded-lg px-3 py-3">
+                      <div key={rank} className="bg-[var(--bg-panel-alt)] rounded-lg px-3 py-3">
                         <label className="flex items-center gap-2 cursor-pointer">
                           <input type="checkbox" checked={enabled} onChange={(e) => setRankVisibility({ ...rankVisibility, [enabledKey]: e.target.checked })} className="w-4 h-4 accent-cyan-500" />
-                          <span className="text-sm font-medium uppercase">{side} Rank {rank}</span>
+                          <span className="text-sm font-medium">Rank {rank} (CE &amp; PE)</span>
                         </label>
                         <label className={`block mt-3 ${enabled ? "" : "opacity-50"}`}>
                           <div className="flex justify-between text-xs text-[var(--text-secondary)] mb-1"><span>Minimum percentage</span><span>{rankVisibility[thresholdKey]}%</span></div>
-                          <input aria-label={`${side.toUpperCase()} Rank ${rank} minimum percentage`} type="range" min={0} max={100} step={5} disabled={!enabled} value={Number(rankVisibility[thresholdKey])} onChange={(e) => setRankVisibility({ ...rankVisibility, [thresholdKey]: parseInt(e.target.value, 10) })} className="w-full accent-cyan-500" />
+                          <input aria-label={`Rank ${rank} minimum percentage`} type="range" min={0} max={100} step={5} disabled={!enabled} value={Number(rankVisibility[thresholdKey])} onChange={(e) => setRankVisibility({ ...rankVisibility, [thresholdKey]: parseInt(e.target.value, 10) })} className="w-full accent-cyan-500" />
                         </label>
                       </div>
                     );
-                  }))}
+                  })}
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
