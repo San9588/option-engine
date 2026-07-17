@@ -774,7 +774,9 @@ _WS_ACTIONS = {
 }
 
 async def ws_handler(request):
-    ws = web.WebSocketResponse()
+    ws = web.WebSocketResponse(
+        heartbeat=30,  # Built-in PING/PONG — dead clients detected in ~30s
+    )
     await ws.prepare(request)
     CLIENT_SUBSCRIPTIONS[ws] = {"symbols": set(), "from": PROCESS_FROM_IDX, "to": PROCESS_TO_IDX}
     log(f"[WS] Client connected. Total: {len(CLIENT_SUBSCRIPTIONS)}")
