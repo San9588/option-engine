@@ -10,6 +10,9 @@
  *   3. unpackRow() uses the plan: type → correct DataView method automatically
  *   4. Decode rules (divide_10, multiply_step, seconds_to_time) applied from schema
  *
+ * Key design: Row decoder is fully schema-driven. Header decoder reads raw first,
+ * then applies step-dependent decode (multiply_step) after knowing the step from symbol_id.
+ *
  * Before: getUint16(offset+46) hardcoded → chng_pct crash when engine changed H→h
  * After:  schema says "int16" → getInt16() automatically picked → NO manual fix needed
  */
@@ -115,24 +118,17 @@ interface ReadOp {
   decode: string | null;  // decode rule from schema (null = raw value)
 }
 
-interface HeaderReadOp {
-  name: string;
-  offset: number;
-  reader: keyof DataView;
-  decode: string | null;
-}
-
 /** Pre-computed plans — built once from schema, reused every tick */
 let rowPlan: ReadOp[] = [];
-let headerPlan: HeaderReadOp[] = [];
-let queryHeaderPlan: HeaderReadOp[] = [];
+let headerPlan: ReadOp[] = [];
+let queryHeaderPlan: ReadOp[] = [];
+let schemaLoaded = false;
 
 /**
  * Build read plans from schema map. Called once when schema is received.
  * After this, unpackRow/unpackTick automatically use correct DataView methods.
  */
 function buildReaderPlan(schema: SchemaMap): void {
-  // Update sizes from schema
   const tickHeader = schema.formats.tick_header;
   const row = schema.formats.row;
   const queryHeader = schema.formats.query_header;
@@ -147,7 +143,7 @@ function buildReaderPlan(schema: SchemaMap): void {
     NAME_MAP[Number(id)] = info.name;
   }
 
-  // Build row read plan
+  // Build row read plan (fully decoded — step is available per-row)
   rowPlan = (row?.fields ?? []).map(f => ({
     name: f.name,
     offset: f.offset,
@@ -155,28 +151,30 @@ function buildReaderPlan(schema: SchemaMap): void {
     decode: f.decode || null,
   }));
 
-  // Build header read plan
+  // Build header read plan (decode=NONE here — we apply manually after knowing step)
   headerPlan = (tickHeader?.fields ?? []).map(f => ({
     name: f.name,
     offset: f.offset,
     reader: TYPE_READERS[f.type] || 'getUint32',
-    decode: f.decode || null,
+    decode: null,  // ← NO auto-decode for header (step unknown at read time)
   }));
 
-  // Build query header read plan
+  // Build query header read plan (step is a direct field here, no multiply_step needed)
   queryHeaderPlan = (queryHeader?.fields ?? []).map(f => ({
     name: f.name,
     offset: f.offset,
     reader: TYPE_READERS[f.type] || 'getUint32',
-    decode: f.decode || null,
+    decode: null,
   }));
+
+  schemaLoaded = true;
 
   console.log(`[SCHEMA-DRIVEN] Plans built: header=${headerPlan.length} fields, row=${rowPlan.length} fields, qhdr=${queryHeaderPlan.length} fields`);
   console.log(`[SCHEMA-DRIVEN] Sizes: HDR=${HDR_SIZE}, ROW=${ROW_SIZE}, QHDR=${QHDR_SIZE}`);
 
-  // Log type mapping for verification
-  const typeChanges = rowPlan.filter(p => p.decode);
-  console.log(`[SCHEMA-DRIVEN] Decoded fields: ${typeChanges.map(p => `${String(p.name)}(${String(p.reader)}/${String(p.decode)})`).join(', ')}`);
+  // Log type→reader mapping for verification
+  const typeMap = rowPlan.map(p => `${String(p.name)}:${String(p.reader)}`).join(', ');
+  console.log(`[SCHEMA-DRIVEN] Row readers: ${typeMap}`);
 }
 
 // ==================== HELPERS ====================
@@ -209,134 +207,208 @@ function unpackMeta(pack: number) {
   };
 }
 
-// ==================== SCHEMA-DRIVEN FIELD READER ====================
+// ==================== UNPACK ROW (schema-driven) ====================
 /**
- * Reads a single field from DataView using the read plan.
- * This is the core: type from schema → correct DataView method automatically.
- * "uint16" → getUint16, "int16" → getInt16 — no hardcoding!
+ * Reads a single 86-byte row using the schema plan.
+ * Type → DataView method is automatic: "int16" → getInt16, "uint16" → getUint16, etc.
+ * Decode rules applied from schema: divide_10, multiply_step, seconds_to_time.
  */
-function readField(dv: DataView, op: ReadOp | HeaderReadOp): number {
-  const method = dv[op.reader] as (byteOffset: number) => number;
-  return method.call(dv, op.offset);
-}
-
-/** Apply decode rule from schema to a raw value */
-function applyDecode(raw: number, decode: string | null, step: number): number | string {
-  if (!decode) return raw;
-  switch (decode) {
-    case 'multiply_step':   return raw * step;
-    case 'divide_10':       return raw / 10;
-    case 'seconds_to_time': return fmtTime(raw);
-    default:                return raw;
-  }
-}
-
-// ==================== UNPACK SINGLE ROW (schema-driven) ====================
-function unpackRow(dv: DataView, offset: number, step: number): OptionRow {
-  // Read all raw fields from schema plan — offsets shifted by row start
+function unpackRowSchema(dv: DataView, offset: number, step: number): OptionRow {
+  // Phase 1: Read raw values via schema plan (type → correct DataView method)
   const raw: Record<string, number> = {};
-  for (const op of rowPlan) {
+  for (let i = 0; i < rowPlan.length; i++) {
+    const op = rowPlan[i];
     const method = dv[op.reader] as (byteOffset: number) => number;
     raw[op.name] = method.call(dv, offset + op.offset);
   }
 
-  // Apply decode rules
-  const decoded: Record<string, number | string> = {};
-  for (const op of rowPlan) {
-    decoded[op.name] = applyDecode(raw[op.name], op.decode, step);
-  }
+  // Phase 2: Decode
+  const ts       = fmtTime(raw.timestamp);
+  const spot     = raw.spot_price;
+  const chng     = raw.spot_chng;
+  const relIdx   = raw.rel_idx;
+  const strike   = raw.strike_key * step;     // multiply_step
+  const lot      = raw.lot_size;
+  const ceOI     = raw.ce_oi;
+  const ceChng   = raw.ce_chng;
+  const ceVol    = raw.ce_vol;
+  const ceLtp    = raw.ce_ltp;
+  const ceIV     = raw.ce_iv;
+  const ceDelta  = raw.ce_delta;
+  const ceVolPct = raw.ce_vol_pct / 10;       // divide_10
+  const ceOIPct  = raw.ce_oi_pct / 10;        // divide_10
+  const ceChngPct= raw.ce_chng_pct / 10;      // divide_10
+  const peOI     = raw.pe_oi;
+  const peChng   = raw.pe_chng;
+  const peVol    = raw.pe_vol;
+  const peLtp    = raw.pe_ltp;
+  const peIV     = raw.pe_iv;
+  const peDelta  = raw.pe_delta;
+  const peVolPct = raw.pe_vol_pct / 10;       // divide_10
+  const peOIPct  = raw.pe_oi_pct / 10;        // divide_10
+  const peChngPct= raw.pe_chng_pct / 10;      // divide_10
+  const gamma    = raw.gamma;
+  const meta     = unpackMeta(raw.meta_pack);
 
-  // Unpack meta_pack
-  const meta = unpackMeta(raw.meta_pack);
-
-  // Build OptionRow — field names from schema map directly to output
   return {
-    timestamp:      decoded.timestamp as string,
-    spot_price:     decoded.spot_price as number,
-    spot_chng:      decoded.spot_chng as number,
-    relative_idx:   decoded.rel_idx as number,
-    strike:         decoded.strike_key as number,
-    lot_size:       decoded.lot_size as number,
-    ce_oi:          decoded.ce_oi as number,
-    ce_oi_short:    shortValue(decoded.ce_oi as number, UNIT_SUFFIX.indexOf(meta.ce_oi_unit)),
-    ce_oi_unit:     meta.ce_oi_unit,
-    ce_chng:        decoded.ce_chng as number,
-    ce_chng_short:  shortValue(decoded.ce_chng as number, UNIT_SUFFIX.indexOf(meta.ce_chng_unit)),
-    ce_chng_unit:   meta.ce_chng_unit,
-    ce_vol:         decoded.ce_vol as number,
-    ce_vol_short:   shortValue(decoded.ce_vol as number, UNIT_SUFFIX.indexOf(meta.ce_vol_unit)),
-    ce_vol_unit:    meta.ce_vol_unit,
-    ce_ltp:         decoded.ce_ltp as number,
-    ce_iv:          decoded.ce_iv as number,
-    ce_delta:       decoded.ce_delta as number,
-    ce_vol_pct:     decoded.ce_vol_pct as number,
-    ce_oi_pct:      decoded.ce_oi_pct as number,
-    ce_chng_pct:    decoded.ce_chng_pct as number,
-    pe_oi:          decoded.pe_oi as number,
-    pe_oi_short:    shortValue(decoded.pe_oi as number, UNIT_SUFFIX.indexOf(meta.pe_oi_unit)),
-    pe_oi_unit:     meta.pe_oi_unit,
-    pe_chng:        decoded.pe_chng as number,
-    pe_chng_short:  shortValue(decoded.pe_chng as number, UNIT_SUFFIX.indexOf(meta.pe_chng_unit)),
-    pe_chng_unit:   meta.pe_chng_unit,
-    pe_vol:         decoded.pe_vol as number,
-    pe_vol_short:   shortValue(decoded.pe_vol as number, UNIT_SUFFIX.indexOf(meta.pe_vol_unit)),
-    pe_vol_unit:    meta.pe_vol_unit,
-    pe_ltp:         decoded.pe_ltp as number,
-    pe_iv:          decoded.pe_iv as number,
-    pe_delta:       decoded.pe_delta as number,
-    pe_vol_pct:     decoded.pe_vol_pct as number,
-    pe_oi_pct:      decoded.pe_oi_pct as number,
-    pe_chng_pct:    decoded.pe_chng_pct as number,
-    gamma:          decoded.gamma as number,
-    ce_rank:        `${meta.ce_vol_rank}${meta.ce_oi_rank}${meta.ce_chng_rank}`,
-    pe_rank:        `${meta.pe_vol_rank}${meta.pe_oi_rank}${meta.pe_chng_rank}`,
+    timestamp: ts,
+    spot_price: spot,
+    spot_chng: chng,
+    relative_idx: relIdx,
+    strike,
+    lot_size: lot,
+    ce_oi: ceOI,
+    ce_oi_short: shortValue(ceOI, UNIT_SUFFIX.indexOf(meta.ce_oi_unit)),
+    ce_oi_unit: meta.ce_oi_unit,
+    ce_chng: ceChng,
+    ce_chng_short: shortValue(ceChng, UNIT_SUFFIX.indexOf(meta.ce_chng_unit)),
+    ce_chng_unit: meta.ce_chng_unit,
+    ce_vol: ceVol,
+    ce_vol_short: shortValue(ceVol, UNIT_SUFFIX.indexOf(meta.ce_vol_unit)),
+    ce_vol_unit: meta.ce_vol_unit,
+    ce_ltp: ceLtp,
+    ce_iv: ceIV,
+    ce_delta: ceDelta,
+    ce_vol_pct: ceVolPct,
+    ce_oi_pct: ceOIPct,
+    ce_chng_pct: ceChngPct,
+    pe_oi: peOI,
+    pe_oi_short: shortValue(peOI, UNIT_SUFFIX.indexOf(meta.pe_oi_unit)),
+    pe_oi_unit: meta.pe_oi_unit,
+    pe_chng: peChng,
+    pe_chng_short: shortValue(peChng, UNIT_SUFFIX.indexOf(meta.pe_chng_unit)),
+    pe_chng_unit: meta.pe_chng_unit,
+    pe_vol: peVol,
+    pe_vol_short: shortValue(peVol, UNIT_SUFFIX.indexOf(meta.pe_vol_unit)),
+    pe_vol_unit: meta.pe_vol_unit,
+    pe_ltp: peLtp,
+    pe_iv: peIV,
+    pe_delta: peDelta,
+    pe_vol_pct: peVolPct,
+    pe_oi_pct: peOIPct,
+    pe_chng_pct: peChngPct,
+    gamma,
+    ce_rank: `${meta.ce_vol_rank}${meta.ce_oi_rank}${meta.ce_chng_rank}`,
+    pe_rank: `${meta.pe_vol_rank}${meta.pe_oi_rank}${meta.pe_chng_rank}`,
   };
 }
 
-// ==================== UNPACK TICK HEADER (schema-driven) ====================
-function unpackTickHeader(dv: DataView): Record<string, number | string> {
-  const result: Record<string, number | string> = {};
-  for (const op of headerPlan) {
-    const method = dv[op.reader] as (byteOffset: number) => number;
-    const raw = method.call(dv, op.offset);
-    result[op.name] = applyDecode(raw, op.decode, 0);
-  }
-  return result;
+// ==================== UNPACK ROW (fallback — hardcoded, for when schema not loaded) ====================
+function unpackRowFallback(dv: DataView, offset: number, step: number): OptionRow {
+  const ts       = dv.getUint32(offset);
+  const spot     = dv.getFloat32(offset + 4);
+  const chng     = dv.getFloat32(offset + 8);
+  const relIdx   = dv.getInt16(offset + 12);
+  const strikeKey= dv.getUint16(offset + 14);
+  const lot      = dv.getUint16(offset + 16);
+  const ceOI     = dv.getInt32(offset + 18);
+  const ceChng   = dv.getInt32(offset + 22);
+  const ceVol    = dv.getFloat32(offset + 26);
+  const ceLtp    = dv.getFloat32(offset + 30);
+  const ceIV     = dv.getFloat32(offset + 34);
+  const ceDelta  = dv.getFloat32(offset + 38);
+  const ceVolPct = dv.getUint16(offset + 42) / 10;
+  const ceOIPct  = dv.getUint16(offset + 44) / 10;
+  const ceChngPct= dv.getInt16(offset + 46) / 10;
+  const peOI     = dv.getInt32(offset + 48);
+  const peChng   = dv.getInt32(offset + 52);
+  const peVol    = dv.getFloat32(offset + 56);
+  const peLtp    = dv.getFloat32(offset + 60);
+  const peIV     = dv.getFloat32(offset + 64);
+  const peDelta  = dv.getFloat32(offset + 68);
+  const peVolPct = dv.getUint16(offset + 72) / 10;
+  const peOIPct  = dv.getUint16(offset + 74) / 10;
+  const peChngPct= dv.getInt16(offset + 76) / 10;
+  const gamma    = dv.getFloat32(offset + 78);
+  const meta     = unpackMeta(dv.getInt32(offset + 82));
+  const strike   = strikeKey * step;
+
+  return {
+    timestamp: fmtTime(ts),
+    spot_price: spot,
+    spot_chng: chng,
+    relative_idx: relIdx,
+    strike,
+    lot_size: lot,
+    ce_oi: ceOI,
+    ce_oi_short: shortValue(ceOI, UNIT_SUFFIX.indexOf(meta.ce_oi_unit)),
+    ce_oi_unit: meta.ce_oi_unit,
+    ce_chng: ceChng,
+    ce_chng_short: shortValue(ceChng, UNIT_SUFFIX.indexOf(meta.ce_chng_unit)),
+    ce_chng_unit: meta.ce_chng_unit,
+    ce_vol: ceVol,
+    ce_vol_short: shortValue(ceVol, UNIT_SUFFIX.indexOf(meta.ce_vol_unit)),
+    ce_vol_unit: meta.ce_vol_unit,
+    ce_ltp: ceLtp,
+    ce_iv: ceIV,
+    ce_delta: ceDelta,
+    ce_vol_pct: ceVolPct,
+    ce_oi_pct: ceOIPct,
+    ce_chng_pct: ceChngPct,
+    pe_oi: peOI,
+    pe_oi_short: shortValue(peOI, UNIT_SUFFIX.indexOf(meta.pe_oi_unit)),
+    pe_oi_unit: meta.pe_oi_unit,
+    pe_chng: peChng,
+    pe_chng_short: shortValue(peChng, UNIT_SUFFIX.indexOf(meta.pe_chng_unit)),
+    pe_chng_unit: meta.pe_chng_unit,
+    pe_vol: peVol,
+    pe_vol_short: shortValue(peVol, UNIT_SUFFIX.indexOf(meta.pe_vol_unit)),
+    pe_vol_unit: meta.pe_vol_unit,
+    pe_ltp: peLtp,
+    pe_iv: peIV,
+    pe_delta: peDelta,
+    pe_vol_pct: peVolPct,
+    pe_oi_pct: peOIPct,
+    pe_chng_pct: peChngPct,
+    gamma,
+    ce_rank: `${meta.ce_vol_rank}${meta.ce_oi_rank}${meta.ce_chng_rank}`,
+    pe_rank: `${meta.pe_vol_rank}${meta.pe_oi_rank}${meta.pe_chng_rank}`,
+  };
+}
+
+/** Dispatch: use schema-driven plan if available, else hardcoded fallback */
+function unpackRow(dv: DataView, offset: number, step: number): OptionRow {
+  return schemaLoaded && rowPlan.length > 0
+    ? unpackRowSchema(dv, offset, step)
+    : unpackRowFallback(dv, offset, step);
 }
 
 // ==================== UNPACK TICK PACKET (WebSocket) ====================
 export function unpackTick(buffer: ArrayBuffer): TickData {
   const dv = new DataView(buffer);
 
-  // Header (schema-driven if plan exists, else fallback)
+  // ── HEADER ──
+  // Always read raw values first, then apply step-dependent decode
   let symbolId: number, rowCount: number, step: number;
-  let spotPrice: number, spotChng: number, atmKey: number, timestamp: string | number;
+  let spotPrice: number, spotChng: number, atmStrike: number, timestamp: string;
 
-  if (headerPlan.length > 0) {
-    const hdr = unpackTickHeader(dv);
-    symbolId  = Number(hdr.symbol_id ?? 0);
-    rowCount  = Number(hdr.row_count ?? 0);
-    step      = STEP_MAP[symbolId] ?? 50;
-    spotPrice = Number(hdr.spot_price ?? 0);
-    spotChng  = Number(hdr.spot_chng ?? 0);
-    atmKey    = Number(hdr.atm_key ?? 0);
-    timestamp = hdr.timestamp ?? "";
-    // atm_key decode: multiply_step
-    if (typeof atmKey === 'number' && atmKey > 0 && atmKey < 65536) {
-      atmKey = atmKey * step;
+  if (schemaLoaded && headerPlan.length > 0) {
+    // Schema-driven: read header fields via plan (raw, no decode)
+    const hdrRaw: Record<string, number> = {};
+    for (const op of headerPlan) {
+      const method = dv[op.reader] as (byteOffset: number) => number;
+      hdrRaw[op.name] = method.call(dv, op.offset);
     }
-  } else {
-    // Fallback: hardcoded header read (pre-schema)
-    timestamp = fmtTime(dv.getUint32(0));
-    spotPrice = dv.getFloat32(4);
-    spotChng  = dv.getFloat32(8);
-    atmKey    = dv.getUint16(12) * (STEP_MAP[dv.getUint32(16)] ?? 50);
-    symbolId  = dv.getUint32(16);
-    rowCount  = dv.getUint16(20);
+    symbolId  = hdrRaw.symbol_id ?? 0;
+    rowCount  = hdrRaw.row_count ?? 0;
     step      = STEP_MAP[symbolId] ?? 50;
+    spotPrice = hdrRaw.spot_price ?? 0;
+    spotChng  = hdrRaw.spot_chng ?? 0;
+    timestamp = fmtTime(hdrRaw.timestamp ?? 0);
+    atmStrike = (hdrRaw.atm_key ?? 0) * step;  // multiply_step AFTER knowing step
+  } else {
+    // Fallback: hardcoded header
+    const rawTs = dv.getUint32(0);
+    spotPrice   = dv.getFloat32(4);
+    spotChng    = dv.getFloat32(8);
+    symbolId    = dv.getUint32(16);
+    rowCount    = dv.getUint16(20);
+    step        = STEP_MAP[symbolId] ?? 50;
+    timestamp   = fmtTime(rawTs);
+    atmStrike   = dv.getUint16(12) * step;
   }
 
-  // Rows
+  // ── ROWS ──
   const rows: OptionRow[] = new Array(rowCount);
   for (let i = 0; i < rowCount; i++) {
     rows[i] = unpackRow(dv, HDR_SIZE + i * ROW_SIZE, step);
@@ -344,10 +416,10 @@ export function unpackTick(buffer: ArrayBuffer): TickData {
 
   return {
     symbol: NAME_MAP[symbolId] ?? `ID:${symbolId}`,
-    timestamp: String(timestamp),
+    timestamp,
     spot: spotPrice,
     chng: spotChng,
-    atm: atmKey,
+    atm: atmStrike,
     count: rowCount,
     data: rows,
   };
@@ -359,15 +431,15 @@ export function unpackQuery(buffer: ArrayBuffer): TickData {
 
   let symbolId: number, rowCount: number, step: number;
 
-  if (queryHeaderPlan.length > 0) {
-    const qhdr: Record<string, number | string> = {};
+  if (schemaLoaded && queryHeaderPlan.length > 0) {
+    const qhdr: Record<string, number> = {};
     for (const op of queryHeaderPlan) {
       const method = dv[op.reader] as (byteOffset: number) => number;
       qhdr[op.name] = method.call(dv, op.offset);
     }
-    symbolId = Number(qhdr.symbol_id ?? 0);
-    rowCount = Number(qhdr.row_count ?? 0);
-    step     = Number(qhdr.step ?? 50);
+    symbolId = qhdr.symbol_id ?? 0;
+    rowCount = qhdr.row_count ?? 0;
+    step     = qhdr.step ?? 50;
   } else {
     symbolId = dv.getUint32(0);
     rowCount = dv.getUint16(4);
@@ -395,10 +467,7 @@ let cachedSchema: SchemaMap | null = null;
 
 /**
  * Fetch schema from engine and build reader plans.
- * This is the ONLY place that needs to be called — everything else
- * adapts automatically from the schema.
- *
- * Call this once on WebSocket connect or page load.
+ * Call this once on page load — everything else adapts automatically.
  */
 export async function fetchSchemaMap(baseUrl: string): Promise<SchemaMap> {
   const fallback: SchemaMap = {
@@ -410,25 +479,24 @@ export async function fetchSchemaMap(baseUrl: string): Promise<SchemaMap> {
     const schema: SchemaMap = await resp.json();
     cachedSchema = schema;
     buildReaderPlan(schema);
-    console.log(`[SCHEMA] ✅ Loaded v${schema.version}, UI auto-adapted!`);
+    console.log(`[SCHEMA] ✅ Loaded v${schema.version} — UI auto-adapted!`);
     return schema;
   } catch (e) {
-    console.warn("[SCHEMA] Failed to fetch, using hardcoded defaults:", e);
+    console.warn("[SCHEMA] Fetch failed, using hardcoded fallback:", e);
     cachedSchema = fallback;
-    // No plan built — unpackRow will use fallback hardcoded reads
-    // This ensures backwards compatibility if engine is down at startup
+    // Fallback unpacker works without schema — hardcoded offsets/types
     return fallback;
   }
 }
 
 /**
  * Update schema from WebSocket message (received after get_schema action).
- * Called when schema arrives via WS instead of HTTP.
+ * This is the schema-driven trigger — engine changes type, UI auto-adapts.
  */
 export function updateSchemaFromWS(schema: SchemaMap): void {
   cachedSchema = schema;
   buildReaderPlan(schema);
-  console.log(`[SCHEMA-WS] ✅ Updated v${schema.version}, UI auto-adapted!`);
+  console.log(`[SCHEMA-WS] ✅ Updated v${schema.version} — UI auto-adapted!`);
 }
 
 // ==================== LEGACY JSON PARSER (fallback for old engine) ====================
