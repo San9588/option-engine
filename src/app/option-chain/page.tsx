@@ -305,8 +305,14 @@ export default function OptionChainPage() {
         try {
           // ── BINARY MESSAGE (v6 tick packet) ──
           if (event.data instanceof ArrayBuffer) {
+            const bufLen = event.data.byteLength;
+            console.log(`[WS-RECV] Binary ${bufLen}B bytes, subscribed: ${symbol}`);
             const tick: TickData = unpackTick(event.data);
-            if (tick.symbol !== symbol) return;
+            console.log(`[WS-RECV] Unpacked: ${tick.symbol} | spot=${tick.spot} | rows=${tick.count} | ts=${tick.timestamp}`);
+            if (tick.symbol !== symbol) {
+              console.warn(`[WS-RECV] Symbol mismatch: got ${tick.symbol}, subscribed to ${symbol} — DROPPED`);
+              return;
+            }
 
             const parsedRows = tick.data;
             parsedRows.sort((a: OptionRow, b: OptionRow) =>
