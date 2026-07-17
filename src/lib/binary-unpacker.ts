@@ -215,11 +215,12 @@ function unpackMeta(pack: number) {
  */
 function unpackRowSchema(dv: DataView, offset: number, step: number): OptionRow {
   // Phase 1: Read raw values via schema plan (type → correct DataView method)
+  // CRITICAL: second arg `true` = little-endian (Python struct '<' packs LE)
   const raw: Record<string, number> = {};
   for (let i = 0; i < rowPlan.length; i++) {
     const op = rowPlan[i];
-    const method = dv[op.reader] as (byteOffset: number) => number;
-    raw[op.name] = method.call(dv, offset + op.offset);
+    const method = dv[op.reader] as (byteOffset: number, littleEndian?: boolean) => number;
+    raw[op.name] = method.call(dv, offset + op.offset, true);
   }
 
   // Phase 2: Decode
@@ -295,32 +296,33 @@ function unpackRowSchema(dv: DataView, offset: number, step: number): OptionRow 
 
 // ==================== UNPACK ROW (fallback — hardcoded, for when schema not loaded) ====================
 function unpackRowFallback(dv: DataView, offset: number, step: number): OptionRow {
-  const ts       = dv.getUint32(offset);
-  const spot     = dv.getFloat32(offset + 4);
-  const chng     = dv.getFloat32(offset + 8);
-  const relIdx   = dv.getInt16(offset + 12);
-  const strike   = dv.getInt32(offset + 14);     // direct strike value (88B row)
-  const lot      = dv.getUint16(offset + 18);
-  const ceOI     = dv.getInt32(offset + 20);
-  const ceChng   = dv.getInt32(offset + 24);
-  const ceVol    = dv.getFloat32(offset + 28);
-  const ceLtp    = dv.getFloat32(offset + 32);
-  const ceIV     = dv.getFloat32(offset + 36);
-  const ceDelta  = dv.getFloat32(offset + 40);
-  const ceVolPct = dv.getUint16(offset + 44) / 10;
-  const ceOIPct  = dv.getUint16(offset + 46) / 10;
-  const ceChngPct= dv.getInt16(offset + 48) / 10;
-  const peOI     = dv.getInt32(offset + 50);
-  const peChng   = dv.getInt32(offset + 54);
-  const peVol    = dv.getFloat32(offset + 58);
-  const peLtp    = dv.getFloat32(offset + 62);
-  const peIV     = dv.getFloat32(offset + 66);
-  const peDelta  = dv.getFloat32(offset + 70);
-  const peVolPct = dv.getUint16(offset + 74) / 10;
-  const peOIPct  = dv.getUint16(offset + 76) / 10;
-  const peChngPct= dv.getInt16(offset + 78) / 10;
-  const gamma    = dv.getFloat32(offset + 80);
-  const meta     = unpackMeta(dv.getInt32(offset + 84));
+  // CRITICAL: `true` = little-endian (Python struct '<' packs LE)
+  const ts       = dv.getUint32(offset, true);
+  const spot     = dv.getFloat32(offset + 4, true);
+  const chng     = dv.getFloat32(offset + 8, true);
+  const relIdx   = dv.getInt16(offset + 12, true);
+  const strike   = dv.getInt32(offset + 14, true);
+  const lot      = dv.getUint16(offset + 18, true);
+  const ceOI     = dv.getInt32(offset + 20, true);
+  const ceChng   = dv.getInt32(offset + 24, true);
+  const ceVol    = dv.getFloat32(offset + 28, true);
+  const ceLtp    = dv.getFloat32(offset + 32, true);
+  const ceIV     = dv.getFloat32(offset + 36, true);
+  const ceDelta  = dv.getFloat32(offset + 40, true);
+  const ceVolPct = dv.getUint16(offset + 44, true) / 10;
+  const ceOIPct  = dv.getUint16(offset + 46, true) / 10;
+  const ceChngPct= dv.getInt16(offset + 48, true) / 10;
+  const peOI     = dv.getInt32(offset + 50, true);
+  const peChng   = dv.getInt32(offset + 54, true);
+  const peVol    = dv.getFloat32(offset + 58, true);
+  const peLtp    = dv.getFloat32(offset + 62, true);
+  const peIV     = dv.getFloat32(offset + 66, true);
+  const peDelta  = dv.getFloat32(offset + 70, true);
+  const peVolPct = dv.getUint16(offset + 74, true) / 10;
+  const peOIPct  = dv.getUint16(offset + 76, true) / 10;
+  const peChngPct= dv.getInt16(offset + 78, true) / 10;
+  const gamma    = dv.getFloat32(offset + 80, true);
+  const meta     = unpackMeta(dv.getInt32(offset + 84, true));
 
   return {
     timestamp: fmtTime(ts),
@@ -384,10 +386,11 @@ export function unpackTick(buffer: ArrayBuffer): TickData {
 
   if (schemaLoaded && headerPlan.length > 0) {
     // Schema-driven: read header fields via plan (raw, no decode)
+    // CRITICAL: `true` = little-endian
     const hdrRaw: Record<string, number> = {};
     for (const op of headerPlan) {
-      const method = dv[op.reader] as (byteOffset: number) => number;
-      hdrRaw[op.name] = method.call(dv, op.offset);
+      const method = dv[op.reader] as (byteOffset: number, littleEndian?: boolean) => number;
+      hdrRaw[op.name] = method.call(dv, op.offset, true);
     }
     symbolId  = hdrRaw.symbol_id ?? 0;
     rowCount  = hdrRaw.row_count ?? 0;
@@ -397,15 +400,15 @@ export function unpackTick(buffer: ArrayBuffer): TickData {
     timestamp = fmtTime(hdrRaw.timestamp ?? 0);
     atmStrike = (hdrRaw.atm_key ?? 0) * step;  // multiply_step AFTER knowing step
   } else {
-    // Fallback: hardcoded header
-    const rawTs = dv.getUint32(0);
-    spotPrice   = dv.getFloat32(4);
-    spotChng    = dv.getFloat32(8);
-    symbolId    = dv.getUint32(16);
-    rowCount    = dv.getUint16(20);
+    // Fallback: hardcoded header — `true` = little-endian
+    const rawTs = dv.getUint32(0, true);
+    spotPrice   = dv.getFloat32(4, true);
+    spotChng    = dv.getFloat32(8, true);
+    symbolId    = dv.getUint32(16, true);
+    rowCount    = dv.getUint16(20, true);
     step        = STEP_MAP[symbolId] ?? 50;
     timestamp   = fmtTime(rawTs);
-    atmStrike   = dv.getUint16(12) * step;
+    atmStrike   = dv.getUint16(12, true) * step;
   }
 
   // ── SANITY CHECK: cap rowCount to what buffer can hold ──
@@ -441,16 +444,16 @@ export function unpackQuery(buffer: ArrayBuffer): TickData {
   if (schemaLoaded && queryHeaderPlan.length > 0) {
     const qhdr: Record<string, number> = {};
     for (const op of queryHeaderPlan) {
-      const method = dv[op.reader] as (byteOffset: number) => number;
-      qhdr[op.name] = method.call(dv, op.offset);
+      const method = dv[op.reader] as (byteOffset: number, littleEndian?: boolean) => number;
+      qhdr[op.name] = method.call(dv, op.offset, true);
     }
     symbolId = qhdr.symbol_id ?? 0;
     rowCount = qhdr.row_count ?? 0;
     step     = qhdr.step ?? 50;
   } else {
-    symbolId = dv.getUint32(0);
-    rowCount = dv.getUint16(4);
-    step     = dv.getUint16(6);
+    symbolId = dv.getUint32(0, true);
+    rowCount = dv.getUint16(4, true);
+    step     = dv.getUint16(6, true);
   }
 
   // Sanity check
