@@ -376,6 +376,7 @@ function unpackRow(dv: DataView, offset: number, step: number): OptionRow {
 // ==================== UNPACK TICK PACKET (WebSocket) ====================
 export function unpackTick(buffer: ArrayBuffer): TickData {
   const dv = new DataView(buffer);
+  const bufLen = buffer.byteLength;
 
   // ── HEADER ──
   // Always read raw values first, then apply step-dependent decode
@@ -406,6 +407,13 @@ export function unpackTick(buffer: ArrayBuffer): TickData {
     step        = STEP_MAP[symbolId] ?? 50;
     timestamp   = fmtTime(rawTs);
     atmStrike   = dv.getUint16(12) * step;
+  }
+
+  // ── SANITY CHECK: cap rowCount to what buffer can hold ──
+  const maxRows = Math.max(0, Math.floor((bufLen - HDR_SIZE) / ROW_SIZE));
+  if (rowCount > maxRows) {
+    console.warn(`[UNPACK] Buffer too small: ${bufLen}B, expected ${HDR_SIZE + rowCount * ROW_SIZE}B for ${rowCount} rows. Capping to ${maxRows}.`);
+    rowCount = maxRows;
   }
 
   // ── ROWS ──
@@ -444,6 +452,13 @@ export function unpackQuery(buffer: ArrayBuffer): TickData {
     symbolId = dv.getUint32(0);
     rowCount = dv.getUint16(4);
     step     = dv.getUint16(6);
+  }
+
+  // Sanity check
+  const maxRows = Math.max(0, Math.floor((buffer.byteLength - QHDR_SIZE) / ROW_SIZE));
+  if (rowCount > maxRows) {
+    console.warn(`[UNPACK] Query buffer too small: ${buffer.byteLength}B for ${rowCount} rows. Capping to ${maxRows}.`);
+    rowCount = maxRows;
   }
 
   const rows: OptionRow[] = new Array(rowCount);
