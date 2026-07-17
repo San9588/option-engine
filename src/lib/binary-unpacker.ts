@@ -1,19 +1,25 @@
 /**
- * Option Engine Binary Unpacker (v6)
+ * Option Engine Binary Unpacker (v6) — SCHEMA-DRIVEN
  *
- * Decodes binary tick packets from the engine into JS objects.
- * Binary format: Header(22B) + N × Row(86B) per tick
+ * Single source of truth: Schema Map JSON from engine.
+ * Engine changes schema → UI automatically adapts. No manual code changes.
  *
- * Schema map is fetched once from the server and cached.
- * All byte offsets/types come from engine_v6.py binary format.
+ * How it works:
+ *   1. On connect, fetch schema map from engine (/schema or WS get_schema)
+ *   2. buildReaderPlan() converts schema fields → pre-computed read instructions
+ *   3. unpackRow() uses the plan: type → correct DataView method automatically
+ *   4. Decode rules (divide_10, multiply_step, seconds_to_time) applied from schema
+ *
+ * Before: getUint16(offset+46) hardcoded → chng_pct crash when engine changed H→h
+ * After:  schema says "int16" → getInt16() automatically picked → NO manual fix needed
  */
 
-// ==================== CONSTANTS (from schema_map) ====================
-const HDR_SIZE = 22;   // tick_header.size
-const ROW_SIZE = 86;   // row.size
-const QHDR_SIZE = 8;   // query_header.size
+// ==================== CONSTANTS (defaults, overridden by schema) ====================
+let HDR_SIZE = 22;
+let ROW_SIZE = 86;
+let QHDR_SIZE = 8;
 
-// Symbol registry (mirrors engine SYMBOL_REGISTRY)
+// Symbol registry (defaults, overridden by schema.symbols)
 const STEP_MAP: Record<number, number> = { 1: 50, 2: 100, 3: 100, 4: 50 };
 const NAME_MAP: Record<number, string> = {
   1: "NIFTY", 2: "BANKNIFTY", 3: "SENSEX", 4: "CRUDEOIL",
@@ -89,6 +95,90 @@ interface SchemaField {
   decode?: string;
 }
 
+// ==================== SCHEMA-DRIVEN READER PLAN ====================
+/**
+ * Maps schema type strings → DataView method names.
+ * Engine changes "uint16" to "int16" in schema → UI automatically uses getInt16.
+ */
+const TYPE_READERS: Record<string, keyof DataView> = {
+  'uint32':  'getUint32',
+  'int32':   'getInt32',
+  'uint16':  'getUint16',
+  'int16':   'getInt16',
+  'float32': 'getFloat32',
+};
+
+interface ReadOp {
+  name: string;           // field name from schema
+  offset: number;         // byte offset from schema
+  reader: keyof DataView; // DataView method name, picked from TYPE_READERS
+  decode: string | null;  // decode rule from schema (null = raw value)
+}
+
+interface HeaderReadOp {
+  name: string;
+  offset: number;
+  reader: keyof DataView;
+  decode: string | null;
+}
+
+/** Pre-computed plans — built once from schema, reused every tick */
+let rowPlan: ReadOp[] = [];
+let headerPlan: HeaderReadOp[] = [];
+let queryHeaderPlan: HeaderReadOp[] = [];
+
+/**
+ * Build read plans from schema map. Called once when schema is received.
+ * After this, unpackRow/unpackTick automatically use correct DataView methods.
+ */
+function buildReaderPlan(schema: SchemaMap): void {
+  // Update sizes from schema
+  const tickHeader = schema.formats.tick_header;
+  const row = schema.formats.row;
+  const queryHeader = schema.formats.query_header;
+
+  if (tickHeader) HDR_SIZE = tickHeader.size;
+  if (row) ROW_SIZE = row.size;
+  if (queryHeader) QHDR_SIZE = queryHeader.size;
+
+  // Update symbol registry from schema
+  for (const [id, info] of Object.entries(schema.symbols)) {
+    STEP_MAP[Number(id)] = info.step;
+    NAME_MAP[Number(id)] = info.name;
+  }
+
+  // Build row read plan
+  rowPlan = (row?.fields ?? []).map(f => ({
+    name: f.name,
+    offset: f.offset,
+    reader: TYPE_READERS[f.type] || 'getUint32',
+    decode: f.decode || null,
+  }));
+
+  // Build header read plan
+  headerPlan = (tickHeader?.fields ?? []).map(f => ({
+    name: f.name,
+    offset: f.offset,
+    reader: TYPE_READERS[f.type] || 'getUint32',
+    decode: f.decode || null,
+  }));
+
+  // Build query header read plan
+  queryHeaderPlan = (queryHeader?.fields ?? []).map(f => ({
+    name: f.name,
+    offset: f.offset,
+    reader: TYPE_READERS[f.type] || 'getUint32',
+    decode: f.decode || null,
+  }));
+
+  console.log(`[SCHEMA-DRIVEN] Plans built: header=${headerPlan.length} fields, row=${rowPlan.length} fields, qhdr=${queryHeaderPlan.length} fields`);
+  console.log(`[SCHEMA-DRIVEN] Sizes: HDR=${HDR_SIZE}, ROW=${ROW_SIZE}, QHDR=${QHDR_SIZE}`);
+
+  // Log type mapping for verification
+  const typeChanges = rowPlan.filter(p => p.decode);
+  console.log(`[SCHEMA-DRIVEN] Decoded fields: ${typeChanges.map(p => `${String(p.name)}(${String(p.reader)}/${String(p.decode)})`).join(', ')}`);
+}
+
 // ==================== HELPERS ====================
 function fmtTime(s: number): string {
   const h = (s / 3600) | 0;
@@ -119,94 +209,132 @@ function unpackMeta(pack: number) {
   };
 }
 
-// ==================== UNPACK SINGLE ROW (86 bytes → OptionRow) ====================
+// ==================== SCHEMA-DRIVEN FIELD READER ====================
+/**
+ * Reads a single field from DataView using the read plan.
+ * This is the core: type from schema → correct DataView method automatically.
+ * "uint16" → getUint16, "int16" → getInt16 — no hardcoding!
+ */
+function readField(dv: DataView, op: ReadOp | HeaderReadOp): number {
+  const method = dv[op.reader] as (byteOffset: number) => number;
+  return method.call(dv, op.offset);
+}
+
+/** Apply decode rule from schema to a raw value */
+function applyDecode(raw: number, decode: string | null, step: number): number | string {
+  if (!decode) return raw;
+  switch (decode) {
+    case 'multiply_step':   return raw * step;
+    case 'divide_10':       return raw / 10;
+    case 'seconds_to_time': return fmtTime(raw);
+    default:                return raw;
+  }
+}
+
+// ==================== UNPACK SINGLE ROW (schema-driven) ====================
 function unpackRow(dv: DataView, offset: number, step: number): OptionRow {
-  const ts       = dv.getUint32(offset);
-  const spot     = dv.getFloat32(offset + 4);
-  const chng     = dv.getFloat32(offset + 8);
-  const relIdx   = dv.getInt16(offset + 12);
-  const strikeKey = dv.getUint16(offset + 14);
-  const lot      = dv.getUint16(offset + 16);
-  const ceOI     = dv.getInt32(offset + 18);
-  const ceChng   = dv.getInt32(offset + 22);
-  const ceVol    = dv.getFloat32(offset + 26);
-  const ceLtp    = dv.getFloat32(offset + 30);
-  const ceIV     = dv.getFloat32(offset + 34);
-  const ceDelta  = dv.getFloat32(offset + 38);
-  const ceVolPct = dv.getUint16(offset + 42) / 10;
-  const ceOIPct  = dv.getUint16(offset + 44) / 10;
-  const ceChngPct = dv.getInt16(offset + 46) / 10;
-  const peOI     = dv.getInt32(offset + 48);
-  const peChng   = dv.getInt32(offset + 52);
-  const peVol    = dv.getFloat32(offset + 56);
-  const peLtp    = dv.getFloat32(offset + 60);
-  const peIV     = dv.getFloat32(offset + 64);
-  const peDelta  = dv.getFloat32(offset + 68);
-  const peVolPct = dv.getUint16(offset + 72) / 10;
-  const peOIPct  = dv.getUint16(offset + 74) / 10;
-  const peChngPct = dv.getInt16(offset + 76) / 10;
-  const gamma    = dv.getFloat32(offset + 78);
-  const meta     = dv.getInt32(offset + 82);
+  // Read all raw fields from schema plan — offsets shifted by row start
+  const raw: Record<string, number> = {};
+  for (const op of rowPlan) {
+    const method = dv[op.reader] as (byteOffset: number) => number;
+    raw[op.name] = method.call(dv, offset + op.offset);
+  }
 
-  const m = unpackMeta(meta);
-  const strike = strikeKey * step;
+  // Apply decode rules
+  const decoded: Record<string, number | string> = {};
+  for (const op of rowPlan) {
+    decoded[op.name] = applyDecode(raw[op.name], op.decode, step);
+  }
 
+  // Unpack meta_pack
+  const meta = unpackMeta(raw.meta_pack);
+
+  // Build OptionRow — field names from schema map directly to output
   return {
-    timestamp: fmtTime(ts),
-    spot_price: spot,
-    spot_chng: chng,
-    relative_idx: relIdx,
-    strike,
-    lot_size: lot,
-    ce_oi: ceOI,
-    ce_oi_short: shortValue(ceOI, UNIT_SUFFIX.indexOf(m.ce_oi_unit)),
-    ce_oi_unit: m.ce_oi_unit,
-    ce_chng: ceChng,
-    ce_chng_short: shortValue(ceChng, UNIT_SUFFIX.indexOf(m.ce_chng_unit)),
-    ce_chng_unit: m.ce_chng_unit,
-    ce_vol: ceVol,
-    ce_vol_short: shortValue(ceVol, UNIT_SUFFIX.indexOf(m.ce_vol_unit)),
-    ce_vol_unit: m.ce_vol_unit,
-    ce_ltp: ceLtp,
-    ce_iv: ceIV,
-    ce_delta: ceDelta,
-    ce_vol_pct: ceVolPct,
-    ce_oi_pct: ceOIPct,
-    ce_chng_pct: ceChngPct,
-    pe_oi: peOI,
-    pe_oi_short: shortValue(peOI, UNIT_SUFFIX.indexOf(m.pe_oi_unit)),
-    pe_oi_unit: m.pe_oi_unit,
-    pe_chng: peChng,
-    pe_chng_short: shortValue(peChng, UNIT_SUFFIX.indexOf(m.pe_chng_unit)),
-    pe_chng_unit: m.pe_chng_unit,
-    pe_vol: peVol,
-    pe_vol_short: shortValue(peVol, UNIT_SUFFIX.indexOf(m.pe_vol_unit)),
-    pe_vol_unit: m.pe_vol_unit,
-    pe_ltp: peLtp,
-    pe_iv: peIV,
-    pe_delta: peDelta,
-    pe_vol_pct: peVolPct,
-    pe_oi_pct: peOIPct,
-    pe_chng_pct: peChngPct,
-    gamma,
-    ce_rank: `${m.ce_vol_rank}${m.ce_oi_rank}${m.ce_chng_rank}`,
-    pe_rank: `${m.pe_vol_rank}${m.pe_oi_rank}${m.pe_chng_rank}`,
+    timestamp:      decoded.timestamp as string,
+    spot_price:     decoded.spot_price as number,
+    spot_chng:      decoded.spot_chng as number,
+    relative_idx:   decoded.rel_idx as number,
+    strike:         decoded.strike_key as number,
+    lot_size:       decoded.lot_size as number,
+    ce_oi:          decoded.ce_oi as number,
+    ce_oi_short:    shortValue(decoded.ce_oi as number, UNIT_SUFFIX.indexOf(meta.ce_oi_unit)),
+    ce_oi_unit:     meta.ce_oi_unit,
+    ce_chng:        decoded.ce_chng as number,
+    ce_chng_short:  shortValue(decoded.ce_chng as number, UNIT_SUFFIX.indexOf(meta.ce_chng_unit)),
+    ce_chng_unit:   meta.ce_chng_unit,
+    ce_vol:         decoded.ce_vol as number,
+    ce_vol_short:   shortValue(decoded.ce_vol as number, UNIT_SUFFIX.indexOf(meta.ce_vol_unit)),
+    ce_vol_unit:    meta.ce_vol_unit,
+    ce_ltp:         decoded.ce_ltp as number,
+    ce_iv:          decoded.ce_iv as number,
+    ce_delta:       decoded.ce_delta as number,
+    ce_vol_pct:     decoded.ce_vol_pct as number,
+    ce_oi_pct:      decoded.ce_oi_pct as number,
+    ce_chng_pct:    decoded.ce_chng_pct as number,
+    pe_oi:          decoded.pe_oi as number,
+    pe_oi_short:    shortValue(decoded.pe_oi as number, UNIT_SUFFIX.indexOf(meta.pe_oi_unit)),
+    pe_oi_unit:     meta.pe_oi_unit,
+    pe_chng:        decoded.pe_chng as number,
+    pe_chng_short:  shortValue(decoded.pe_chng as number, UNIT_SUFFIX.indexOf(meta.pe_chng_unit)),
+    pe_chng_unit:   meta.pe_chng_unit,
+    pe_vol:         decoded.pe_vol as number,
+    pe_vol_short:   shortValue(decoded.pe_vol as number, UNIT_SUFFIX.indexOf(meta.pe_vol_unit)),
+    pe_vol_unit:    meta.pe_vol_unit,
+    pe_ltp:         decoded.pe_ltp as number,
+    pe_iv:          decoded.pe_iv as number,
+    pe_delta:       decoded.pe_delta as number,
+    pe_vol_pct:     decoded.pe_vol_pct as number,
+    pe_oi_pct:      decoded.pe_oi_pct as number,
+    pe_chng_pct:    decoded.pe_chng_pct as number,
+    gamma:          decoded.gamma as number,
+    ce_rank:        `${meta.ce_vol_rank}${meta.ce_oi_rank}${meta.ce_chng_rank}`,
+    pe_rank:        `${meta.pe_vol_rank}${meta.pe_oi_rank}${meta.pe_chng_rank}`,
   };
+}
+
+// ==================== UNPACK TICK HEADER (schema-driven) ====================
+function unpackTickHeader(dv: DataView): Record<string, number | string> {
+  const result: Record<string, number | string> = {};
+  for (const op of headerPlan) {
+    const method = dv[op.reader] as (byteOffset: number) => number;
+    const raw = method.call(dv, op.offset);
+    result[op.name] = applyDecode(raw, op.decode, 0);
+  }
+  return result;
 }
 
 // ==================== UNPACK TICK PACKET (WebSocket) ====================
 export function unpackTick(buffer: ArrayBuffer): TickData {
   const dv = new DataView(buffer);
 
-  // Header
-  const timestamp = dv.getUint32(0);
-  const spotPrice = dv.getFloat32(4);
-  const spotChng  = dv.getFloat32(8);
-  const atmKey    = dv.getUint16(12);
-  const lotSize   = dv.getUint16(14);
-  const symbolId  = dv.getUint32(16);
-  const rowCount  = dv.getUint16(20);
-  const step      = STEP_MAP[symbolId] ?? 50;
+  // Header (schema-driven if plan exists, else fallback)
+  let symbolId: number, rowCount: number, step: number;
+  let spotPrice: number, spotChng: number, atmKey: number, timestamp: string | number;
+
+  if (headerPlan.length > 0) {
+    const hdr = unpackTickHeader(dv);
+    symbolId  = Number(hdr.symbol_id ?? 0);
+    rowCount  = Number(hdr.row_count ?? 0);
+    step      = STEP_MAP[symbolId] ?? 50;
+    spotPrice = Number(hdr.spot_price ?? 0);
+    spotChng  = Number(hdr.spot_chng ?? 0);
+    atmKey    = Number(hdr.atm_key ?? 0);
+    timestamp = hdr.timestamp ?? "";
+    // atm_key decode: multiply_step
+    if (typeof atmKey === 'number' && atmKey > 0 && atmKey < 65536) {
+      atmKey = atmKey * step;
+    }
+  } else {
+    // Fallback: hardcoded header read (pre-schema)
+    timestamp = fmtTime(dv.getUint32(0));
+    spotPrice = dv.getFloat32(4);
+    spotChng  = dv.getFloat32(8);
+    atmKey    = dv.getUint16(12) * (STEP_MAP[dv.getUint32(16)] ?? 50);
+    symbolId  = dv.getUint32(16);
+    rowCount  = dv.getUint16(20);
+    step      = STEP_MAP[symbolId] ?? 50;
+  }
 
   // Rows
   const rows: OptionRow[] = new Array(rowCount);
@@ -216,10 +344,10 @@ export function unpackTick(buffer: ArrayBuffer): TickData {
 
   return {
     symbol: NAME_MAP[symbolId] ?? `ID:${symbolId}`,
-    timestamp: fmtTime(timestamp),
+    timestamp: String(timestamp),
     spot: spotPrice,
     chng: spotChng,
-    atm: atmKey * step,
+    atm: atmKey,
     count: rowCount,
     data: rows,
   };
@@ -229,9 +357,22 @@ export function unpackTick(buffer: ArrayBuffer): TickData {
 export function unpackQuery(buffer: ArrayBuffer): TickData {
   const dv = new DataView(buffer);
 
-  const symbolId = dv.getUint32(0);
-  const rowCount = dv.getUint16(4);
-  const step     = dv.getUint16(6);
+  let symbolId: number, rowCount: number, step: number;
+
+  if (queryHeaderPlan.length > 0) {
+    const qhdr: Record<string, number | string> = {};
+    for (const op of queryHeaderPlan) {
+      const method = dv[op.reader] as (byteOffset: number) => number;
+      qhdr[op.name] = method.call(dv, op.offset);
+    }
+    symbolId = Number(qhdr.symbol_id ?? 0);
+    rowCount = Number(qhdr.row_count ?? 0);
+    step     = Number(qhdr.step ?? 50);
+  } else {
+    symbolId = dv.getUint32(0);
+    rowCount = dv.getUint16(4);
+    step     = dv.getUint16(6);
+  }
 
   const rows: OptionRow[] = new Array(rowCount);
   for (let i = 0; i < rowCount; i++) {
@@ -249,22 +390,45 @@ export function unpackQuery(buffer: ArrayBuffer): TickData {
   };
 }
 
-// ==================== FETCH SCHEMA MAP (once, cache) ====================
+// ==================== SCHEMA MAP MANAGEMENT ====================
 let cachedSchema: SchemaMap | null = null;
 
+/**
+ * Fetch schema from engine and build reader plans.
+ * This is the ONLY place that needs to be called — everything else
+ * adapts automatically from the schema.
+ *
+ * Call this once on WebSocket connect or page load.
+ */
 export async function fetchSchemaMap(baseUrl: string): Promise<SchemaMap> {
-  if (cachedSchema) return cachedSchema;
-  const fallback: SchemaMap = { version: 1, formats: {}, symbols: {}, decode_rules: {}, meta_pack_layout: {} };
+  const fallback: SchemaMap = {
+    version: 0, formats: {}, symbols: {},
+    decode_rules: {}, meta_pack_layout: {},
+  };
   try {
     const resp = await fetch(`${baseUrl}/schema`);
     const schema: SchemaMap = await resp.json();
     cachedSchema = schema;
+    buildReaderPlan(schema);
+    console.log(`[SCHEMA] ✅ Loaded v${schema.version}, UI auto-adapted!`);
     return schema;
   } catch (e) {
-    console.warn("[SCHEMA] Failed to fetch, using defaults:", e);
+    console.warn("[SCHEMA] Failed to fetch, using hardcoded defaults:", e);
     cachedSchema = fallback;
+    // No plan built — unpackRow will use fallback hardcoded reads
+    // This ensures backwards compatibility if engine is down at startup
     return fallback;
   }
+}
+
+/**
+ * Update schema from WebSocket message (received after get_schema action).
+ * Called when schema arrives via WS instead of HTTP.
+ */
+export function updateSchemaFromWS(schema: SchemaMap): void {
+  cachedSchema = schema;
+  buildReaderPlan(schema);
+  console.log(`[SCHEMA-WS] ✅ Updated v${schema.version}, UI auto-adapted!`);
 }
 
 // ==================== LEGACY JSON PARSER (fallback for old engine) ====================

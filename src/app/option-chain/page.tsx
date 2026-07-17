@@ -108,7 +108,7 @@ const SYMBOL_GROUPS = [
 ];
 
 // ==================== BINARY UNPACKER (v6) ====================
-import { unpackTick, parseLegacyTick, fetchSchemaMap } from "../../lib/binary-unpacker";
+import { unpackTick, parseLegacyTick, fetchSchemaMap, updateSchemaFromWS } from "../../lib/binary-unpacker";
 import type { TickData } from "../../lib/binary-unpacker";
 
 // Fetch schema map once on module load (non-blocking)
@@ -328,9 +328,12 @@ export default function OptionChainPage() {
           // ── TEXT MESSAGE (JSON: schema, subscriptions, or legacy tick) ──
           const data = JSON.parse(event.data);
 
-          // Schema map response (cache it)
+          // Schema map response — drive the unpacker automatically!
           if (data.type === "schema") {
             console.log("[SCHEMA] Received from server, version:", data.schema?.version);
+            if (data.schema) {
+              updateSchemaFromWS(data.schema);
+            }
             return;
           }
 
