@@ -107,83 +107,14 @@ const SYMBOL_GROUPS = [
   { category: "MCX", symbols: ["CRUDEOIL"] },
 ];
 
-// ==================== HELPER: Decode meta_pack (mirrors engine.py _pack_meta) ====================
-const UNIT_SUFFIX = ["", "K", "M", "B"];
+// ==================== BINARY UNPACKER (v6) ====================
+import { unpackTick, parseLegacyTick, fetchSchemaMap } from "../../lib/binary-unpacker";
+import type { TickData } from "../../lib/binary-unpacker";
 
-function shortValue(raw: number, unitCode: number): number {
-  return Math.round((raw / Math.pow(1000, unitCode)) * 100) / 100;
-}
-
-// ==================== HELPER: Parse row array to object ====================
-function isValidWireRow(row: unknown): row is number[] {
-  return Array.isArray(row) && row.length >= 26 && row.every((value, index) => index === 0 || Number.isFinite(value));
-}
-
-function parseRowToObject(row: number[]): OptionRow {
-  const ce_oi = row[6];
-  const ce_chng = row[7];
-  const ce_vol = row[8];
-  const pe_oi = row[15];
-  const pe_chng = row[16];
-  const pe_vol = row[17];
-  const meta = row[25];
-
-  const ce_oi_u   = meta & 0b11;
-  const ce_chng_u = (meta >> 2) & 0b11;
-  const ce_vol_u  = (meta >> 4) & 0b11;
-  const pe_oi_u   = (meta >> 6) & 0b11;
-  const pe_chng_u = (meta >> 8) & 0b11;
-  const pe_vol_u  = (meta >> 10) & 0b11;
-
-  const ce_vol_rank  = (meta >> 12) & 0b11;
-  const ce_oi_rank   = (meta >> 14) & 0b11;
-  const ce_chng_rank = (meta >> 16) & 0b11;
-  const pe_vol_rank  = (meta >> 18) & 0b11;
-  const pe_oi_rank   = (meta >> 20) & 0b11;
-  const pe_chng_rank = (meta >> 22) & 0b11;
-
-  return {
-    timestamp: String(row[0]),
-    spot_price: row[1],
-    spot_chng: row[2],
-    relative_idx: row[3],
-    strike: row[4],
-    lot_size: row[5],
-    ce_oi,
-    ce_oi_short: shortValue(ce_oi, ce_oi_u),
-    ce_oi_unit: UNIT_SUFFIX[ce_oi_u],
-    ce_chng,
-    ce_chng_short: shortValue(ce_chng, ce_chng_u),
-    ce_chng_unit: UNIT_SUFFIX[ce_chng_u],
-    ce_vol,
-    ce_vol_short: shortValue(ce_vol, ce_vol_u),
-    ce_vol_unit: UNIT_SUFFIX[ce_vol_u],
-    ce_ltp: row[9],
-    ce_iv: row[10],
-    ce_delta: row[11],
-    ce_vol_pct: row[12],
-    ce_oi_pct: row[13],
-    ce_chng_pct: row[14],
-    pe_oi,
-    pe_oi_short: shortValue(pe_oi, pe_oi_u),
-    pe_oi_unit: UNIT_SUFFIX[pe_oi_u],
-    pe_chng,
-    pe_chng_short: shortValue(pe_chng, pe_chng_u),
-    pe_chng_unit: UNIT_SUFFIX[pe_chng_u],
-    pe_vol,
-    pe_vol_short: shortValue(pe_vol, pe_vol_u),
-    pe_vol_unit: UNIT_SUFFIX[pe_vol_u],
-    pe_ltp: row[18],
-    pe_iv: row[19],
-    pe_delta: row[20],
-    pe_vol_pct: row[21],
-    pe_oi_pct: row[22],
-    pe_chng_pct: row[23],
-    gamma: row[24],
-    // Same 3-digit "vol,oi,chng" string format as before -> getRankColor needs zero changes
-    ce_rank: `${ce_vol_rank}${ce_oi_rank}${ce_chng_rank}`,
-    pe_rank: `${pe_vol_rank}${pe_oi_rank}${pe_chng_rank}`,
-  };
+// Fetch schema map once on module load (non-blocking)
+if (typeof window !== "undefined") {
+  const baseUrl = process.env.NEXT_PUBLIC_WS_URL?.replace("ws", "http").replace(/\/ws$/, "") || "http://127.0.0.1:8788";
+  fetchSchemaMap(baseUrl).then(() => console.log("[SCHEMA] Cached"));
 }
 
 // ==================== HELPER: Rank colors (user-configurable) ====================
@@ -360,21 +291,24 @@ export default function OptionChainPage() {
     const connect = () => {
       if (stopped) return;
       const ws = new WebSocket(wsUrl);
+      ws.binaryType = "arraybuffer"; // ← CRITICAL: receive binary packets
       wsRef.current = ws;
 
       ws.onopen = () => {
         setConnected(true);
+        // Request schema map (once, cached by the unpacker module)
+        ws.send(JSON.stringify({ action: "get_schema" }));
         ws.send(JSON.stringify({ action: "subscribe", symbol, from: -strikeRange, to: strikeRange }));
       };
 
       ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data);
-          if (data.type === "tick" && data.symbol === symbol) {
-            if (!Array.isArray(data.data)) return;
-            const validRows = data.data.filter(isValidWireRow);
-            if (validRows.length !== data.data.length) console.warn("Ignored malformed option-chain rows");
-            const parsedRows = validRows.map(parseRowToObject);
+          // ── BINARY MESSAGE (v6 tick packet) ──
+          if (event.data instanceof ArrayBuffer) {
+            const tick: TickData = unpackTick(event.data);
+            if (tick.symbol !== symbol) return;
+
+            const parsedRows = tick.data;
             parsedRows.sort((a: OptionRow, b: OptionRow) =>
               reverseOrderRef.current ? b.relative_idx - a.relative_idx : a.relative_idx - b.relative_idx
             );
@@ -385,9 +319,40 @@ export default function OptionChainPage() {
                 return oldRow && Object.keys(row).every(key => oldRow[key as keyof OptionRow] === row[key as keyof OptionRow]) ? oldRow : row;
               });
             });
-            setSpotPrice(data.spot);
-            setSpotChng(data.spot_chng);
-            setTimestamp(data.timestamp);
+            setSpotPrice(tick.spot);
+            setSpotChng(tick.chng);
+            setTimestamp(tick.timestamp);
+            return;
+          }
+
+          // ── TEXT MESSAGE (JSON: schema, subscriptions, or legacy tick) ──
+          const data = JSON.parse(event.data);
+
+          // Schema map response (cache it)
+          if (data.type === "schema") {
+            console.log("[SCHEMA] Received from server, version:", data.schema?.version);
+            return;
+          }
+
+          // Legacy JSON tick (fallback for old engine)
+          if (data.type === "tick" && data.symbol === symbol) {
+            const tick = parseLegacyTick(data);
+            if (!tick) return;
+
+            const parsedRows = tick.data;
+            parsedRows.sort((a: OptionRow, b: OptionRow) =>
+              reverseOrderRef.current ? b.relative_idx - a.relative_idx : a.relative_idx - b.relative_idx
+            );
+            setRows(previous => {
+              const byStrike = new Map(previous.map(row => [row.strike, row]));
+              return parsedRows.map((row: OptionRow) => {
+                const oldRow = byStrike.get(row.strike);
+                return oldRow && Object.keys(row).every(key => oldRow[key as keyof OptionRow] === row[key as keyof OptionRow]) ? oldRow : row;
+              });
+            });
+            setSpotPrice(tick.spot);
+            setSpotChng(tick.chng);
+            setTimestamp(tick.timestamp);
           }
         } catch (e) {
           console.error("Parse error:", e);
