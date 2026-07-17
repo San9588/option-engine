@@ -19,7 +19,7 @@
 
 // ==================== CONSTANTS (defaults, overridden by schema) ====================
 let HDR_SIZE = 22;
-let ROW_SIZE = 86;
+let ROW_SIZE = 88;
 let QHDR_SIZE = 8;
 
 // Symbol registry (defaults, overridden by schema.symbols)
@@ -227,7 +227,7 @@ function unpackRowSchema(dv: DataView, offset: number, step: number): OptionRow 
   const spot     = raw.spot_price;
   const chng     = raw.spot_chng;
   const relIdx   = raw.rel_idx;
-  const strike   = raw.strike_key * step;     // multiply_step
+  const strike   = raw.strike;                   // direct value (no multiply_step)
   const lot      = raw.lot_size;
   const ceOI     = raw.ce_oi;
   const ceChng   = raw.ce_chng;
@@ -299,29 +299,28 @@ function unpackRowFallback(dv: DataView, offset: number, step: number): OptionRo
   const spot     = dv.getFloat32(offset + 4);
   const chng     = dv.getFloat32(offset + 8);
   const relIdx   = dv.getInt16(offset + 12);
-  const strikeKey= dv.getUint16(offset + 14);
-  const lot      = dv.getUint16(offset + 16);
-  const ceOI     = dv.getInt32(offset + 18);
-  const ceChng   = dv.getInt32(offset + 22);
-  const ceVol    = dv.getFloat32(offset + 26);
-  const ceLtp    = dv.getFloat32(offset + 30);
-  const ceIV     = dv.getFloat32(offset + 34);
-  const ceDelta  = dv.getFloat32(offset + 38);
-  const ceVolPct = dv.getUint16(offset + 42) / 10;
-  const ceOIPct  = dv.getUint16(offset + 44) / 10;
-  const ceChngPct= dv.getInt16(offset + 46) / 10;
-  const peOI     = dv.getInt32(offset + 48);
-  const peChng   = dv.getInt32(offset + 52);
-  const peVol    = dv.getFloat32(offset + 56);
-  const peLtp    = dv.getFloat32(offset + 60);
-  const peIV     = dv.getFloat32(offset + 64);
-  const peDelta  = dv.getFloat32(offset + 68);
-  const peVolPct = dv.getUint16(offset + 72) / 10;
-  const peOIPct  = dv.getUint16(offset + 74) / 10;
-  const peChngPct= dv.getInt16(offset + 76) / 10;
-  const gamma    = dv.getFloat32(offset + 78);
-  const meta     = unpackMeta(dv.getInt32(offset + 82));
-  const strike   = strikeKey * step;
+  const strike   = dv.getInt32(offset + 14);     // direct strike value (88B row)
+  const lot      = dv.getUint16(offset + 18);
+  const ceOI     = dv.getInt32(offset + 20);
+  const ceChng   = dv.getInt32(offset + 24);
+  const ceVol    = dv.getFloat32(offset + 28);
+  const ceLtp    = dv.getFloat32(offset + 32);
+  const ceIV     = dv.getFloat32(offset + 36);
+  const ceDelta  = dv.getFloat32(offset + 40);
+  const ceVolPct = dv.getUint16(offset + 44) / 10;
+  const ceOIPct  = dv.getUint16(offset + 46) / 10;
+  const ceChngPct= dv.getInt16(offset + 48) / 10;
+  const peOI     = dv.getInt32(offset + 50);
+  const peChng   = dv.getInt32(offset + 54);
+  const peVol    = dv.getFloat32(offset + 58);
+  const peLtp    = dv.getFloat32(offset + 62);
+  const peIV     = dv.getFloat32(offset + 66);
+  const peDelta  = dv.getFloat32(offset + 70);
+  const peVolPct = dv.getUint16(offset + 74) / 10;
+  const peOIPct  = dv.getUint16(offset + 76) / 10;
+  const peChngPct= dv.getInt16(offset + 78) / 10;
+  const gamma    = dv.getFloat32(offset + 80);
+  const meta     = unpackMeta(dv.getInt32(offset + 84));
 
   return {
     timestamp: fmtTime(ts),
