@@ -31,6 +31,7 @@ import { transform } from "esbuild";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const SOURCE_FILE = path.join(PROJECT_ROOT, "src/app/option-chain/page.tsx");
+const UNPACKER_FILE = path.join(PROJECT_ROOT, "src/lib/binary-unpacker.ts");
 const OUT_DIR = path.join(PROJECT_ROOT, "standalone-export");
 const OUT_FILE = path.join(OUT_DIR, "index.html");
 
@@ -46,6 +47,22 @@ function fail(msg) {
 if (!fs.existsSync(SOURCE_FILE)) {
   fail(`Source file not found: ${SOURCE_FILE}\nRun this from the project root: node scripts/export-standalone.mjs`);
 }
+
+if (!fs.existsSync(UNPACKER_FILE)) {
+  fail(`Binary unpacker not found: ${UNPACKER_FILE}\nThis file is required for v6 binary packet support.`);
+}
+
+// ===========================================================================
+// 0. Read and prepare the binary unpacker module
+// ===========================================================================
+// The unpacker is imported by page.tsx but the standalone export doesn't have
+// a bundler — so we inline it. We strip exports and types, then esbuild compiles
+// it together with page.tsx in one pass.
+
+let unpackerCode = fs.readFileSync(UNPACKER_FILE, "utf8");
+
+// Remove `export` keyword from functions, interfaces, types, consts
+unpackerCode = unpackerCode.replace(/^(\s*)export\s+(function|interface|type|const|async\s+function)/gm, "$1$2");
 
 let code = fs.readFileSync(SOURCE_FILE, "utf8");
 
@@ -68,6 +85,12 @@ code = code.replace(
 // -> replaced with tiny inline SVG stand-ins defined below, so we just drop the import.
 code = code.replace(/import\s*\{[^}]+\}\s*from\s*["']lucide-react["'];?\s*\n/, "");
 
+// import { unpackTick, parseLegacyTick, fetchSchemaMap } from "../../lib/binary-unpacker";
+// -> these are now defined inline from the unpacker module (inlined above)
+code = code.replace(/import\s*\{[^}]+\}\s*from\s*["'][^"']*binary-unpacker["'];?\s*\n?/g, "");
+// import type { TickData } from "../../lib/binary-unpacker";
+code = code.replace(/import\s+type\s*\{[^}]+\}\s*from\s*["'][^"']*binary-unpacker["'];?\s*\n?/g, "");
+
 // trailing: import React from "react"; (and the comment above it)
 code = code.replace(/\/\/\s*Need to import React for Fragment\s*\nimport React from ["']react["'];?\s*\n?/, "");
 code = code.replace(/^\s*import React from ["']react["'];?\s*\n/m, "");
@@ -88,9 +111,12 @@ if (code.includes("import ") || code.includes("export ")) {
   );
 }
 
-// Compile TSX once during export. This removes Babel and the expensive
-// in-browser TypeScript/JSX transform from every standalone page load.
-const compiled = await transform(code, {
+// Compile TSX + unpacker once during export. The unpacker module is prepended
+// so all its functions are available when page.tsx references them.
+// esbuild's transform strips TypeScript types and compiles JSX in one pass.
+const combinedCode = unpackerCode + "\n\n" + code;
+
+const compiled = await transform(combinedCode, {
   loader: "tsx",
   jsx: "transform",
   target: "es2017",
