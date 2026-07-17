@@ -135,7 +135,7 @@ function unpackRow(dv: DataView, offset: number, step: number): OptionRow {
   const ceDelta  = dv.getFloat32(offset + 38);
   const ceVolPct = dv.getUint16(offset + 42) / 10;
   const ceOIPct  = dv.getUint16(offset + 44) / 10;
-  const ceChngPct = dv.getUint16(offset + 46) / 10;
+  const ceChngPct = dv.getInt16(offset + 46) / 10;
   const peOI     = dv.getInt32(offset + 48);
   const peChng   = dv.getInt32(offset + 52);
   const peVol    = dv.getFloat32(offset + 56);
@@ -144,7 +144,7 @@ function unpackRow(dv: DataView, offset: number, step: number): OptionRow {
   const peDelta  = dv.getFloat32(offset + 68);
   const peVolPct = dv.getUint16(offset + 72) / 10;
   const peOIPct  = dv.getUint16(offset + 74) / 10;
-  const peChngPct = dv.getUint16(offset + 76) / 10;
+  const peChngPct = dv.getInt16(offset + 76) / 10;
   const gamma    = dv.getFloat32(offset + 78);
   const meta     = dv.getInt32(offset + 82);
 
