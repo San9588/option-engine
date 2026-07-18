@@ -587,7 +587,8 @@ def _compute_tick_binary(symbol: str, config: dict, payload_data: dict) -> dict 
     atm_strike = int(round(spot_price / step_size) * step_size)
     sym_id     = config["sym_id"]
     ts_int     = _now_seconds()
-    ts_str     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Time-only string — date is already in DB filename (trading_YYYY-MM-DD.db)
+    ts_str     = _seconds_to_time_str(ts_int)
     atm_key    = atm_strike // step_int
 
     # ── Single-pass extraction ──
