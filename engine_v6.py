@@ -239,7 +239,7 @@ TARGETS_CONFIG: dict = {
     "NIFTY":      {"enabled": ENABLE_NIFTY,     "exchange": "NSE", "seg": 0, "sid": 13,     "step": 50.0,  "ftime": 1, "exp": -1, "scale_div": 1000.0, "sym_id": 1},
     "BANKNIFTY":  {"enabled": ENABLE_BANKNIFTY,  "exchange": "NSE", "seg": 0, "sid": 25,     "step": 100.0, "ftime": 1, "exp": -1, "scale_div": 1000.0, "sym_id": 2},
     "SENSEX":     {"enabled": ENABLE_BSE,        "exchange": "BSE", "seg": 1, "sid": 1,      "step": 100.0, "ftime": 1, "exp": -1, "scale_div": 1000.0, "sym_id": 3},
-    "CRUDEOIL":   {"enabled": ENABLE_CRUDEOIL,   "exchange": "MCX", "seg": 5, "sid": 520702, "step": 50.0,  "ftime": 3, "exp": -1, "scale_div": 100.0,  "sym_id": 4},
+    "CRUDEOIL":   {"enabled": ENABLE_CRUDEOIL,   "exchange": "MCX", "seg": 5, "sid": 560977, "step": 50.0,  "ftime": 3, "exp": -1, "scale_div": 100.0,  "sym_id": 4},
 }
 
 NEXT_FETCH_TIME: dict = {symbol: 0.0 for symbol in TARGETS_CONFIG}
@@ -339,7 +339,7 @@ def init_database():
     conn.execute("PRAGMA cache_size=-8000")
     conn.execute("PRAGMA temp_store=MEMORY")
     conn.execute("PRAGMA mmap_size=33554432")
-    conn.execute("PRAGMA wal_autocheckpoint=2000")
+    conn.execute("PRAGMA wal_autocheckpoint=1500")
     conn.execute("PRAGMA busy_timeout=5000")
 
     for symbol, cfg in TARGETS_CONFIG.items():
