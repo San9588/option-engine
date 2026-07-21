@@ -60,6 +60,23 @@ HDR_SIZE = struct.calcsize(HDR_FMT)  # 22
 QHDR_FMT  = "<IHH"
 QHDR_SIZE = struct.calcsize(QHDR_FMT)  # 8
 
+# Precompiled struct packers — avoids per-call format lookup overhead.
+_HDR_PACKER = struct.Struct(HDR_FMT)
+_QHDR_PACKER = struct.Struct(QHDR_FMT)
+
+# Bulk row packer cache: one struct.Struct that packs ALL rows of a tick
+# in a single call instead of N separate struct.pack() calls in a loop.
+# Keyed by row-count since strike-window size is effectively fixed per symbol.
+_BULK_ROW_PACKER_CACHE: dict[int, struct.Struct] = {}
+_ROW_FIELDS_PER_ROW = 26  # fields in ROW_FMT (excluding the leading '<')
+
+def _get_bulk_row_packer(n: int) -> struct.Struct:
+    packer = _BULK_ROW_PACKER_CACHE.get(n)
+    if packer is None:
+        packer = struct.Struct("<" + ROW_FMT[1:] * n)
+        _BULK_ROW_PACKER_CACHE[n] = packer
+    return packer
+
 
 # ====================================================================
 # SECTION 2: SCHEMA MAP (sent once to UI)
@@ -268,10 +285,10 @@ def _pack_row(ts, spot, chng, rel_idx, strike, lot,
         gamma, meta_pack)
 
 def _pack_tick_header(ts, spot, chng, atm_key, lot, sym_id, row_count) -> bytes:
-    return struct.pack(HDR_FMT, ts, spot, chng, atm_key, lot, sym_id, row_count)
+    return _HDR_PACKER.pack(ts, spot, chng, atm_key, lot, sym_id, row_count)
 
 def _pack_query_header(sym_id, row_count, step) -> bytes:
-    return struct.pack(QHDR_FMT, sym_id, row_count, step)
+    return _QHDR_PACKER.pack(sym_id, row_count, step)
 
 
 # ====================================================================
@@ -511,6 +528,10 @@ def _calculate_single_ranks(values, rel_indices, is_ce, win_from, win_to):
     if n == 0:
         return [0] * n
 
+    # Window bounds are invariant across the whole function — compute once.
+    lo = min(win_from, win_to)
+    hi = max(win_from, win_to)
+
     # Find Rank 1 and Rank 2 inside the window
     rank1_val = -1
     rank1_idx = -1
@@ -519,8 +540,6 @@ def _calculate_single_ranks(values, rel_indices, is_ce, win_from, win_to):
 
     for i in range(n):
         ri = rel_indices[i]
-        lo = min(win_from, win_to)
-        hi = max(win_from, win_to)
         if ri < lo or ri > hi:
             continue
         val = max(values[i], 0)
@@ -546,9 +565,7 @@ def _calculate_single_ranks(values, rel_indices, is_ce, win_from, win_to):
     if rank1_val > 0:
         for i in range(n):
             ri = rel_indices[i]
-            lo = min(win_from, win_to)
-            hi = max(win_from, win_to)
-            if ri >= lo and ri <= hi:
+            if lo <= ri <= hi:
                 continue  # inside window, skip
             val = max(values[i], 0)
             if val > rank1_val:
@@ -677,9 +694,12 @@ def _compute_tick_binary(symbol: str, config: dict, payload_data: dict) -> dict 
     raw = []
     for strike_str, node in oc_dict.items():
         try:
-            strike = int(float(strike_str))
+            strike = int(strike_str)          # fast path: clean integer key
         except (ValueError, TypeError):
-            continue
+            try:
+                strike = int(float(strike_str))  # fallback: "24500.0"-style keys
+            except (ValueError, TypeError):
+                continue
         rel_idx = (strike - atm_strike) // step_int
         if not (PROCESS_FROM_IDX <= rel_idx <= PROCESS_TO_IDX):
             continue
@@ -724,21 +744,23 @@ def _compute_tick_binary(symbol: str, config: dict, payload_data: dict) -> dict 
     pe_oi_ranks, pe_vol_ranks, pe_chng_ranks, pe_oi_pct, pe_vol_pct, pe_chng_pct = \
         calculate_ranks_and_percentages(pe_ois, pe_vols, pe_chngs, rel_indices, is_ce=False, step_size=step_size)
 
-    # ── Magnitude units ──
-    ce_oi_u   = [_magnitude_unit(v) for v in ce_ois]
-    ce_chng_u = [_magnitude_unit(v) for v in ce_chngs]
-    ce_vol_u  = [_magnitude_unit(v) for v in ce_vols]
-    pe_oi_u   = [_magnitude_unit(v) for v in pe_ois]
-    pe_chng_u = [_magnitude_unit(v) for v in pe_chngs]
-    pe_vol_u  = [_magnitude_unit(v) for v in pe_vols]
+    # ── Magnitude units (single pass over all 6 series instead of 6 separate loops) ──
+    ce_oi_u, ce_chng_u, ce_vol_u, pe_oi_u, pe_chng_u, pe_vol_u = zip(*(
+        (_magnitude_unit(a), _magnitude_unit(b), _magnitude_unit(c),
+         _magnitude_unit(d), _magnitude_unit(e), _magnitude_unit(f))
+        for a, b, c, d, e, f in zip(ce_ois, ce_chngs, ce_vols, pe_ois, pe_chngs, pe_vols)
+    ))
 
-    # ── Pack binary rows + build DB rows ──
-    binary_rows = []
-    db_rows = []
+    # ── Build flat arg list, then pack ALL rows in ONE struct call ──
+    # (previously: N separate struct.pack() calls in a Python loop, one per strike;
+    #  now: one bulk struct.Struct.pack() covering every row — same bytes on the
+    #  wire, far fewer Python↔C boundary crossings for large strike windows.)
     spot_f = float(spot_price)
     chng_f = float(spot_chng)
     lot_i  = int(lot_size)
+    _lot   = max(0, min(lot_i, 65535))
 
+    flat_args = []
     for i in range(n):
         meta = _pack_meta_row(
             ce_oi_u[i], ce_chng_u[i], ce_vol_u[i],
@@ -747,17 +769,15 @@ def _compute_tick_binary(symbol: str, config: dict, payload_data: dict) -> dict 
             ce_vol_ranks[i], pe_vol_ranks[i],
             ce_chng_ranks[i], pe_chng_ranks[i],
         )
-        strike_val = strikes[i]
         # Clamp fields to valid range (defense-in-depth)
-        _lot = max(0, min(lot_i, 65535))
         _cvp = max(0, min(int(ce_vol_pct[i]  * 10), 65535))
         _cop = max(0, min(int(ce_oi_pct[i]   * 10), 65535))
         _ccp = max(-32768, min(int(ce_chng_pct[i] * 10), 32767))  # signed int16
         _pvp = max(0, min(int(pe_vol_pct[i]  * 10), 65535))
         _pop = max(0, min(int(pe_oi_pct[i]   * 10), 65535))
         _pcp = max(-32768, min(int(pe_chng_pct[i] * 10), 32767))  # signed int16
-        row_bytes = _pack_row(
-            ts_int, spot_f, chng_f, rel_indices[i], strike_val, _lot,
+        flat_args.extend((
+            ts_int, spot_f, chng_f, rel_indices[i], strikes[i], _lot,
             ce_ois[i], ce_chngs[i], ce_vols[i],
             ce_ltps[i], ce_ivs[i], ce_deltas[i],
             _cvp, _cop, _ccp,
@@ -765,13 +785,21 @@ def _compute_tick_binary(symbol: str, config: dict, payload_data: dict) -> dict 
             pe_ltps[i], pe_ivs[i], pe_deltas[i],
             _pvp, _pop, _pcp,
             gammas[i], meta,
-        )
-        binary_rows.append(row_bytes)
-        db_rows.append((ts_str, strike_val, rel_indices[i], row_bytes))
+        ))
+
+    bulk_packer = _get_bulk_row_packer(n)
+    all_row_bytes = bulk_packer.pack(*flat_args)
+
+    # DB rows still need per-strike payload BLOBs — slice out of the single
+    # packed buffer (cheap memcpy) instead of re-encoding each row.
+    db_rows = [
+        (ts_str, strikes[i], rel_indices[i], all_row_bytes[i * ROW_SIZE:(i + 1) * ROW_SIZE])
+        for i in range(n)
+    ]
 
     # ── Assemble full tick packet (header + rows) ──
     header = _pack_tick_header(ts_int, spot_f, chng_f, atm_key, lot_i, sym_id, n)
-    packet = header + b''.join(binary_rows)
+    packet = header + all_row_bytes
 
     log(f"[TICK] {symbol}: {n} strikes | Spot: {spot_price} | Clients: {len(CLIENT_SUBSCRIPTIONS)}")
 
@@ -782,7 +810,7 @@ def _compute_tick_binary(symbol: str, config: dict, payload_data: dict) -> dict 
         "spot_price":  spot_price,
         "spot_chng":   spot_chng,
         "n_elements":  n,
-        "binary_rows": binary_rows,
+        "binary_rows": [row[3] for row in db_rows],  # kept for interface compatibility
         "db_rows":     db_rows,
         "packet":      packet,
     }
@@ -1176,9 +1204,18 @@ async def collector_loop(app):
                     await asyncio.to_thread(init_database)
                     await fetch_exact_expiry_tokens(session)
                     continue
-                # All due symbols fetched, just wait
-                elapsed = time.time() - start_time
-                await asyncio.sleep(max(0.1, 1.0 - elapsed))
+                # Nothing due right now — sleep until the next actually-scheduled
+                # fetch instead of polling every 1s regardless of ftime interval.
+                # Capped at 5s so market-close / DB-rotation checks stay responsive.
+                enabled_next_times = [
+                    t for sym, t in NEXT_FETCH_TIME.items()
+                    if TARGETS_CONFIG[sym]["enabled"]
+                ]
+                if enabled_next_times:
+                    wait_for = min(enabled_next_times) - time.time()
+                else:
+                    wait_for = 1.0
+                await asyncio.sleep(max(0.1, min(wait_for, 5.0)))
                 continue
 
             # ── STAGE 1: Parallel fetch (per-symbol resilient) ──
