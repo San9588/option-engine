@@ -42,8 +42,12 @@ interface OptionRow {
   pe_oi_pct: number;
   pe_chng_pct: number;
   gamma: number;
-  ce_rank: string;
-  pe_rank: string;
+  ce_oi_rank: number;
+  pe_oi_rank: number;
+  ce_vol_rank: number;
+  pe_vol_rank: number;
+  ce_chng_rank: number;
+  pe_chng_rank: number;
 }
 
 interface ColumnConfig {
@@ -54,7 +58,7 @@ interface ColumnConfig {
   pctKey?: keyof OptionRow;
   unitKey?: keyof OptionRow; // K/M/B suffix for this cell
   secondaryKey?: keyof OptionRow; // For combined cells like IV+Delta
-  rankIndex?: number;
+  rankType?: "oi" | "vol" | "chng"; // Which rank field to use for this column
   visible: boolean;
   width: number;
 }
@@ -81,23 +85,23 @@ interface SavedSettings {
 }
 
 const STORAGE_KEY = "option_chain_settings";
-const SETTINGS_VERSION = 2;
+const SETTINGS_VERSION = 3;
 const SETTINGS_SAVE_DELAY_MS = 250;
 
 // ==================== COLUMN DEFINITIONS ====================
 const DEFAULT_CE_COLUMNS: ColumnConfig[] = [
   { id: "ce_iv_delta", label: "IV / Delta", shortLabel: "IV/Δ", dataKey: "ce_iv", secondaryKey: "ce_delta", visible: true, width: 70 },
-  { id: "ce_chng", label: "OI Change", shortLabel: "Chng", dataKey: "ce_chng_short", pctKey: "ce_chng_pct", unitKey: "ce_chng_unit", rankIndex: 2, visible: true, width: 80 },
-  { id: "ce_oi", label: "Open Interest", shortLabel: "OI", dataKey: "ce_oi_short", pctKey: "ce_oi_pct", unitKey: "ce_oi_unit", rankIndex: 1, visible: true, width: 80 },
-  { id: "ce_vol", label: "Volume", shortLabel: "Vol", dataKey: "ce_vol_short", pctKey: "ce_vol_pct", unitKey: "ce_vol_unit", rankIndex: 0, visible: true, width: 80 },
+  { id: "ce_chng", label: "OI Change", shortLabel: "Chng", dataKey: "ce_chng_short", pctKey: "ce_chng_pct", unitKey: "ce_chng_unit", rankType: "chng", visible: true, width: 80 },
+  { id: "ce_oi", label: "Open Interest", shortLabel: "OI", dataKey: "ce_oi_short", pctKey: "ce_oi_pct", unitKey: "ce_oi_unit", rankType: "oi", visible: true, width: 80 },
+  { id: "ce_vol", label: "Volume", shortLabel: "Vol", dataKey: "ce_vol_short", pctKey: "ce_vol_pct", unitKey: "ce_vol_unit", rankType: "vol", visible: true, width: 80 },
   { id: "ce_ltp", label: "LTP", shortLabel: "LTP", dataKey: "ce_ltp", visible: true, width: 70 },
 ];
 
 const DEFAULT_PE_COLUMNS: ColumnConfig[] = [
   { id: "pe_ltp", label: "LTP", shortLabel: "LTP", dataKey: "pe_ltp", visible: true, width: 70 },
-  { id: "pe_vol", label: "Volume", shortLabel: "Vol", dataKey: "pe_vol_short", pctKey: "pe_vol_pct", unitKey: "pe_vol_unit", rankIndex: 0, visible: true, width: 80 },
-  { id: "pe_oi", label: "Open Interest", shortLabel: "OI", dataKey: "pe_oi_short", pctKey: "pe_oi_pct", unitKey: "pe_oi_unit", rankIndex: 1, visible: true, width: 80 },
-  { id: "pe_chng", label: "OI Change", shortLabel: "Chng", dataKey: "pe_chng_short", pctKey: "pe_chng_pct", unitKey: "pe_chng_unit", rankIndex: 2, visible: true, width: 80 },
+  { id: "pe_vol", label: "Volume", shortLabel: "Vol", dataKey: "pe_vol_short", pctKey: "pe_vol_pct", unitKey: "pe_vol_unit", rankType: "vol", visible: true, width: 80 },
+  { id: "pe_oi", label: "Open Interest", shortLabel: "OI", dataKey: "pe_oi_short", pctKey: "pe_oi_pct", unitKey: "pe_oi_unit", rankType: "oi", visible: true, width: 80 },
+  { id: "pe_chng", label: "OI Change", shortLabel: "Chng", dataKey: "pe_chng_short", pctKey: "pe_chng_pct", unitKey: "pe_chng_unit", rankType: "chng", visible: true, width: 80 },
   { id: "pe_iv_delta", label: "IV / Delta", shortLabel: "IV/Δ", dataKey: "pe_iv", secondaryKey: "pe_delta", visible: true, width: 70 },
 ];
 
@@ -119,26 +123,26 @@ if (typeof window !== "undefined") {
 
 // ==================== HELPER: Rank colors (user-configurable) ====================
 interface RankColors {
-  ce1: string; ce2: string; ce3: string;
-  pe1: string; pe2: string; pe3: string;
+  ce1: string; ce2: string; ce0: string; // 1=red(peak), 2=yellow(2nd), 0=grey(bahar)
+  pe1: string; pe2: string; pe0: string; // 1=green(peak), 2=yellow(2nd), 0=grey(bahar)
 }
 
 interface RankVisibility {
   rank2Enabled: boolean; rank2Threshold: number;
-  rank3Enabled: boolean; rank3Threshold: number;
+  rank0Enabled: boolean; // grey/bahar
 }
-// CE: 1st=light red, 2nd=yellow, 3rd=light yellow | PE: 1st=green, 2nd=yellow, 3rd=light yellow
+
 const DEFAULT_RANK_COLORS: RankColors = {
-  ce1: "#f87171", ce2: "#eab308", ce3: "#fde047",
-  pe1: "#22c55e", pe2: "#eab308", pe3: "#fde047",
+  ce1: "#f87171", ce2: "#eab308", ce0: "#9ca3af",
+  pe1: "#22c55e", pe2: "#eab308", pe0: "#9ca3af",
 };
 
 const DEFAULT_RANK_VISIBILITY: RankVisibility = {
   rank2Enabled: true, rank2Threshold: 75,
-  rank3Enabled: false, rank3Threshold: 75,
+  rank0Enabled: true,
 };
 
-const RANK_ALPHA: Record<number, number> = { 1: 0.85, 2: 0.55, 3: 0.35 };
+const RANK_ALPHA: Record<number, number> = { 0: 0.35, 1: 0.85, 2: 0.55 };
 
 function hexToRgba(hex: string, alpha: number): string {
   const clean = hex.replace("#", "");
@@ -148,20 +152,30 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-function getRankColor(rankStr: string, rankIndex: number, side: "ce" | "pe", colors: RankColors, pctValue: unknown, visibility: RankVisibility): string {
-  if (!rankStr || rankStr.length !== 3) return "";
-  const rank = parseInt(rankStr[rankIndex], 10);
-  if (!rank || rank < 1 || rank > 3) return "";
-  const percentage = typeof pctValue === "number" ? pctValue : 0;
-  const enabled = rank === 2 ? visibility.rank2Enabled : visibility.rank3Enabled;
-  const threshold = rank === 2 ? visibility.rank2Threshold : visibility.rank3Threshold;
-  if ((rank === 2 || rank === 3) && (!enabled || percentage <= threshold)) return "";
+/** Get rank value for a given row/side/rankType */
+function getRowRank(row: OptionRow, side: "ce" | "pe", rankType: "oi" | "vol" | "chng"): number {
+  return row[`${side}_${rankType}_rank` as keyof OptionRow] as number;
+}
 
-  const base = side === "ce"
-    ? [colors.ce1, colors.ce2, colors.ce3][rank - 1]
-    : [colors.pe1, colors.pe2, colors.pe3][rank - 1];
-
-  return hexToRgba(base, RANK_ALPHA[rank]);
+function getRankColor(row: OptionRow, rankType: "oi" | "vol" | "chng", side: "ce" | "pe", colors: RankColors, pctValue: unknown, visibility: RankVisibility): string {
+  const rank = getRowRank(row, side, rankType);
+  if (rank === 0) return ""; // unranked
+  // rank 1 = peak (always visible), rank 2 = yellow, rank 3 = grey/bahar
+  if (rank === 3) {
+    // Grey/bahar (was called "rank 0" in engine, stored as 3)
+    if (!visibility.rank0Enabled) return "";
+    const base = side === "ce" ? colors.ce0 : colors.pe0;
+    return hexToRgba(base, RANK_ALPHA[0]);
+  }
+  if (rank === 2) {
+    const percentage = typeof pctValue === "number" ? pctValue : 0;
+    if (!visibility.rank2Enabled || percentage <= visibility.rank2Threshold) return "";
+    const base = side === "ce" ? colors.ce2 : colors.pe2;
+    return hexToRgba(base, RANK_ALPHA[2]);
+  }
+  // rank 1 = peak (always visible)
+  const base = side === "ce" ? colors.ce1 : colors.pe1;
+  return hexToRgba(base, RANK_ALPHA[1]);
 }
 
 // ==================== HELPER: Load/Save Settings ====================
@@ -240,12 +254,12 @@ export default function OptionChainPage() {
         const legacy = saved.rankVisibility as RankVisibility & {
           ceRank2Enabled?: boolean; ceRank2Threshold?: number; peRank2Enabled?: boolean; peRank2Threshold?: number;
           ceRank3Enabled?: boolean; ceRank3Threshold?: number; peRank3Enabled?: boolean; peRank3Threshold?: number;
+          rank3Enabled?: boolean; rank3Threshold?: number;
         };
         setRankVisibility({
           rank2Enabled: legacy.rank2Enabled ?? legacy.ceRank2Enabled ?? legacy.peRank2Enabled ?? true,
           rank2Threshold: legacy.rank2Threshold ?? legacy.ceRank2Threshold ?? legacy.peRank2Threshold ?? 75,
-          rank3Enabled: legacy.rank3Enabled ?? legacy.ceRank3Enabled ?? legacy.peRank3Enabled ?? false,
-          rank3Threshold: legacy.rank3Threshold ?? legacy.ceRank3Threshold ?? legacy.peRank3Threshold ?? 75,
+          rank0Enabled: (legacy as unknown as Record<string, unknown>).rank0Enabled as boolean | undefined ?? true,
         });
       }
       setTheme(saved.theme === "dark" ? "dark" : "light");
@@ -439,8 +453,7 @@ export default function OptionChainPage() {
     const pctValue = col.pctKey ? row[col.pctKey] : null;
     const unitSuffix = col.unitKey ? (row[col.unitKey] as string) : "";
     const secondaryValue = col.secondaryKey ? row[col.secondaryKey] : null;
-    const rankStr = side === "ce" ? row.ce_rank : row.pe_rank;
-    const rankColor = col.rankIndex !== undefined ? getRankColor(rankStr, col.rankIndex, side, rankColors, pctValue, rankVisibility) : "";
+    const rankColor = col.rankType ? getRankColor(row, col.rankType, side, rankColors, pctValue, rankVisibility) : "";
     
     const isSelected = selectedCell?.strike === row.strike && 
                        selectedCell?.column === col.id && 
@@ -674,15 +687,16 @@ export default function OptionChainPage() {
           <tbody>
             {rows.map((row, idx) => {
               const isAtm = row.relative_idx === 0;
-              // Spot price always belongs directly above the ATM strike row: the ATM
-              // strike is the nearest strike at-or-below spot, so spot itself sits
-              // just above it whichever direction the list is sorted in.
-              const showSpotRow = isAtm;
+              // Spot row position based on sort order:
+              // reverseOrder=true  (big strikes top):  spot ABOVE ATM row
+              // reverseOrder=false (small strikes top): spot BELOW ATM row
+              const showSpotAbove = isAtm && reverseOrder;
+              const showSpotBelow = isAtm && !reverseOrder;
 
               return (
                 <React.Fragment key={row.strike}>
-                  {/* Spot Price Row - Above ATM */}
-                  {showSpotRow && (
+                  {/* Spot Price Row - Above ATM (when big strikes on top) */}
+                  {showSpotAbove && (
                     <tr className="bg-[var(--bg-panel-alt)]">
                       <td 
                         colSpan={visibleCeColumns.length + 1 + visiblePeColumns.length}
@@ -733,6 +747,27 @@ export default function OptionChainPage() {
                     {/* PE Cells */}
                     {visiblePeColumns.map(col => renderCell(row, col, "pe"))}
                   </tr>
+
+                  {/* Spot Price Row - Below ATM (when small strikes on top) */}
+                  {showSpotBelow && (
+                    <tr className="bg-[var(--bg-panel-alt)]">
+                      <td 
+                        colSpan={visibleCeColumns.length + 1 + visiblePeColumns.length}
+                        className="py-3 text-center border-b border-[var(--border-color)]"
+                      >
+                        <div className="flex items-center justify-center gap-4 sm:gap-6">
+                          <span className="text-[var(--text-primary)] text-sm sm:text-lg font-bold whitespace-nowrap">{symbol === "CRUDEOIL" ? "Future Price" : "Spot Price"}</span>
+                          <span className="text-xl sm:text-2xl font-bold text-[var(--text-primary)]">
+                            {spotPrice.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                          </span>
+                          <span className={`flex items-center gap-1 text-base sm:text-lg font-semibold ${spotChng >= 0 ? "text-green-500" : "text-red-500"}`}>
+                            {spotChng >= 0 ? <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5" /> : <TrendingDown className="w-4 h-4 sm:w-5 sm:h-5" />}
+                            {spotChng >= 0 ? "+" : ""}{spotChng.toFixed(2)}
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
 
                 </React.Fragment>
               );
@@ -969,30 +1004,32 @@ export default function OptionChainPage() {
               {/* Rank Colors */}
               <div>
                 <h3 className="text-sm font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3">Rank Highlight Colors</h3>
-                <p className="text-xs text-[var(--text-muted)] mb-3">Rank 1 is always visible. Rank 2 and 3 highlights can be filtered by their cell percentage.</p>
+                <p className="text-xs text-[var(--text-muted)] mb-3">Rank 1 (peak) is always visible. Rank 2 and Grey can be toggled.</p>
                 <div className="grid sm:grid-cols-2 gap-3 mb-4">
-                  {([2, 3] as const).map(rank => {
-                    const enabledKey = `rank${rank}Enabled` as keyof RankVisibility;
-                    const thresholdKey = `rank${rank}Threshold` as keyof RankVisibility;
-                    const enabled = Boolean(rankVisibility[enabledKey]);
-                    return (
-                      <div key={rank} className="bg-[var(--bg-panel-alt)] rounded-lg px-3 py-3">
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input type="checkbox" checked={enabled} onChange={(e) => setRankVisibility({ ...rankVisibility, [enabledKey]: e.target.checked })} className="w-4 h-4 accent-cyan-500" />
-                          <span className="text-sm font-medium">Rank {rank} (CE &amp; PE)</span>
-                        </label>
-                        <label className={`block mt-3 ${enabled ? "" : "opacity-50"}`}>
-                          <div className="flex justify-between text-xs text-[var(--text-secondary)] mb-1"><span>Minimum percentage</span><span>{rankVisibility[thresholdKey]}%</span></div>
-                          <input aria-label={`Rank ${rank} minimum percentage`} type="range" min={0} max={100} step={5} disabled={!enabled} value={Number(rankVisibility[thresholdKey])} onChange={(e) => setRankVisibility({ ...rankVisibility, [thresholdKey]: parseInt(e.target.value, 10) })} className="w-full accent-cyan-500" />
-                        </label>
-                      </div>
-                    );
-                  })}
+                  {/* Rank 2 enable/threshold */}
+                  <div className="bg-[var(--bg-panel-alt)] rounded-lg px-3 py-3">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={rankVisibility.rank2Enabled} onChange={(e) => setRankVisibility({ ...rankVisibility, rank2Enabled: e.target.checked })} className="w-4 h-4 accent-cyan-500" />
+                      <span className="text-sm font-medium">Rank 2 — Yellow (CE &amp; PE)</span>
+                    </label>
+                    <label className={`block mt-3 ${rankVisibility.rank2Enabled ? "" : "opacity-50"}`}>
+                      <div className="flex justify-between text-xs text-[var(--text-secondary)] mb-1"><span>Minimum percentage</span><span>{rankVisibility.rank2Threshold}%</span></div>
+                      <input aria-label="Rank 2 minimum percentage" type="range" min={0} max={100} step={5} disabled={!rankVisibility.rank2Enabled} value={rankVisibility.rank2Threshold} onChange={(e) => setRankVisibility({ ...rankVisibility, rank2Threshold: parseInt(e.target.value, 10) })} className="w-full accent-cyan-500" />
+                    </label>
+                  </div>
+                  {/* Rank 0 (grey/bahar) enable */}
+                  <div className="bg-[var(--bg-panel-alt)] rounded-lg px-3 py-3">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={rankVisibility.rank0Enabled} onChange={(e) => setRankVisibility({ ...rankVisibility, rank0Enabled: e.target.checked })} className="w-4 h-4 accent-cyan-500" />
+                      <span className="text-sm font-medium">Grey — Bahar (CE &amp; PE)</span>
+                    </label>
+                    <p className="text-xs text-[var(--text-muted)] mt-2">Values bigger than Rank 1 that fall outside the peak zone.</p>
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <div className="text-xs font-medium text-red-500">CE side</div>
-                    {(["ce1", "ce2", "ce3"] as const).map((key, i) => (
+                    {(["ce1", "ce2", "ce0"] as const).map((key) => (
                       <div key={key} className="flex items-center gap-2 bg-[var(--bg-panel-alt)] rounded-lg px-3 py-2">
                         <input
                           type="color"
@@ -1000,13 +1037,13 @@ export default function OptionChainPage() {
                           onChange={(e) => setRankColors({ ...rankColors, [key]: e.target.value })}
                           className="w-8 h-8 rounded cursor-pointer bg-transparent"
                         />
-                        <span className="text-xs text-[var(--text-secondary)]">#{i + 1} rank</span>
+                        <span className="text-xs text-[var(--text-secondary)]">{key === "ce1" ? "Peak (Red)" : key === "ce2" ? "2nd (Yellow)" : "Bahar (Grey)"}</span>
                       </div>
                     ))}
                   </div>
                   <div className="space-y-2">
                     <div className="text-xs font-medium text-green-600">PE side</div>
-                    {(["pe1", "pe2", "pe3"] as const).map((key, i) => (
+                    {(["pe1", "pe2", "pe0"] as const).map((key) => (
                       <div key={key} className="flex items-center gap-2 bg-[var(--bg-panel-alt)] rounded-lg px-3 py-2">
                         <input
                           type="color"
@@ -1014,7 +1051,7 @@ export default function OptionChainPage() {
                           onChange={(e) => setRankColors({ ...rankColors, [key]: e.target.value })}
                           className="w-8 h-8 rounded cursor-pointer bg-transparent"
                         />
-                        <span className="text-xs text-[var(--text-secondary)]">#{i + 1} rank</span>
+                        <span className="text-xs text-[var(--text-secondary)]">{key === "pe1" ? "Peak (Green)" : key === "pe2" ? "2nd (Yellow)" : "Bahar (Grey)"}</span>
                       </div>
                     ))}
                   </div>

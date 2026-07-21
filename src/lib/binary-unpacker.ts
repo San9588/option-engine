@@ -68,8 +68,13 @@ export interface OptionRow {
   pe_oi_pct: number;
   pe_chng_pct: number;
   gamma: number;
-  ce_rank: string;
-  pe_rank: string;
+  // Individual rank fields: 0=unranked, 1=green/peak, 2=yellow/2nd, 3=grey/bahar
+  ce_oi_rank: number;
+  pe_oi_rank: number;
+  ce_vol_rank: number;
+  pe_vol_rank: number;
+  ce_chng_rank: number;
+  pe_chng_rank: number;
 }
 
 export interface TickData {
@@ -198,11 +203,11 @@ function unpackMeta(pack: number) {
     pe_oi_unit:    UNIT_SUFFIX[(pack >>> 6) & 0b11],
     pe_chng_unit:  UNIT_SUFFIX[(pack >>> 8) & 0b11],
     pe_vol_unit:   UNIT_SUFFIX[(pack >>> 10) & 0b11],
-    ce_vol_rank:   (pack >>> 12) & 0b11,
-    ce_oi_rank:    (pack >>> 14) & 0b11,
-    ce_chng_rank:  (pack >>> 16) & 0b11,
+    ce_oi_rank:    (pack >>> 12) & 0b11,
+    pe_oi_rank:    (pack >>> 14) & 0b11,
+    ce_vol_rank:   (pack >>> 16) & 0b11,
     pe_vol_rank:   (pack >>> 18) & 0b11,
-    pe_oi_rank:    (pack >>> 20) & 0b11,
+    ce_chng_rank:  (pack >>> 20) & 0b11,
     pe_chng_rank:  (pack >>> 22) & 0b11,
   };
 }
@@ -289,8 +294,12 @@ function unpackRowSchema(dv: DataView, offset: number, step: number): OptionRow 
     pe_oi_pct: peOIPct,
     pe_chng_pct: peChngPct,
     gamma,
-    ce_rank: `${meta.ce_vol_rank}${meta.ce_oi_rank}${meta.ce_chng_rank}`,
-    pe_rank: `${meta.pe_vol_rank}${meta.pe_oi_rank}${meta.pe_chng_rank}`,
+    ce_oi_rank: meta.ce_oi_rank,
+    pe_oi_rank: meta.pe_oi_rank,
+    ce_vol_rank: meta.ce_vol_rank,
+    pe_vol_rank: meta.pe_vol_rank,
+    ce_chng_rank: meta.ce_chng_rank,
+    pe_chng_rank: meta.pe_chng_rank,
   };
 }
 
@@ -362,8 +371,12 @@ function unpackRowFallback(dv: DataView, offset: number, step: number): OptionRo
     pe_oi_pct: peOIPct,
     pe_chng_pct: peChngPct,
     gamma,
-    ce_rank: `${meta.ce_vol_rank}${meta.ce_oi_rank}${meta.ce_chng_rank}`,
-    pe_rank: `${meta.pe_vol_rank}${meta.pe_oi_rank}${meta.pe_chng_rank}`,
+    ce_oi_rank: meta.ce_oi_rank,
+    pe_oi_rank: meta.pe_oi_rank,
+    ce_vol_rank: meta.ce_vol_rank,
+    pe_vol_rank: meta.pe_vol_rank,
+    ce_chng_rank: meta.ce_chng_rank,
+    pe_chng_rank: meta.pe_chng_rank,
   };
 }
 
@@ -540,11 +553,11 @@ export function parseLegacyTick(data: { symbol: string; timestamp: string; spot:
     const pe_chng_u = (meta >> 8) & 0b11;
     const pe_vol_u  = (meta >> 10) & 0b11;
 
-    const ce_vol_rank  = (meta >> 12) & 0b11;
-    const ce_oi_rank   = (meta >> 14) & 0b11;
-    const ce_chng_rank = (meta >> 16) & 0b11;
+    const ce_oi_rank   = (meta >> 12) & 0b11;
+    const pe_oi_rank   = (meta >> 14) & 0b11;
+    const ce_vol_rank  = (meta >> 16) & 0b11;
     const pe_vol_rank  = (meta >> 18) & 0b11;
-    const pe_oi_rank   = (meta >> 20) & 0b11;
+    const ce_chng_rank = (meta >> 20) & 0b11;
     const pe_chng_rank = (meta >> 22) & 0b11;
 
     return {
@@ -585,8 +598,12 @@ export function parseLegacyTick(data: { symbol: string; timestamp: string; spot:
       pe_oi_pct: row[22],
       pe_chng_pct: row[23],
       gamma: row[24],
-      ce_rank: `${ce_vol_rank}${ce_oi_rank}${ce_chng_rank}`,
-      pe_rank: `${pe_vol_rank}${pe_oi_rank}${pe_chng_rank}`,
+      ce_oi_rank,
+      pe_oi_rank,
+      ce_vol_rank,
+      pe_vol_rank,
+      ce_chng_rank,
+      pe_chng_rank,
     };
   });
 
