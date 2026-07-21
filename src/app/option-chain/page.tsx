@@ -285,8 +285,10 @@ export default function OptionChainPage() {
   // depend on it (that was reconnecting the socket - and racing a stale
   // reconnect timer - every time the toggle changed).
   const reverseOrderRef = useRef(reverseOrder);
+  const strikeRangeRef = useRef(strikeRange);
   useEffect(() => {
     reverseOrderRef.current = reverseOrder;
+    strikeRangeRef.current = strikeRange;
     // Re-sort whatever we already have immediately, don't wait for next tick
     setRows(prev => {
       const next = [...prev];
@@ -312,7 +314,7 @@ export default function OptionChainPage() {
         setConnected(true);
         // Request schema map (once, cached by the unpacker module)
         ws.send(JSON.stringify({ action: "get_schema" }));
-        ws.send(JSON.stringify({ action: "subscribe", symbol, from: -strikeRange, to: strikeRange }));
+        ws.send(JSON.stringify({ action: "subscribe", symbol, from: -strikeRangeRef.current, to: strikeRangeRef.current }));
       };
 
       ws.onmessage = (event) => {
@@ -400,7 +402,15 @@ export default function OptionChainPage() {
       if (reconnectTimer) clearTimeout(reconnectTimer);
       wsRef.current?.close();
     };
-  }, [wsUrl, symbol, strikeRange, settingsLoaded]);
+  }, [wsUrl, symbol, settingsLoaded]);
+
+  // ==================== Strike range change (set_range on existing WS) ====================
+  useEffect(() => {
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ action: "set_range", from: -strikeRange, to: strikeRange }));
+    }
+  }, [strikeRange]);
 
   // ==================== Scroll to ATM on first load ====================
   useEffect(() => {
