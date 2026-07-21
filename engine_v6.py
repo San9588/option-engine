@@ -156,6 +156,19 @@ ENABLE_CRUDEOIL   = True
 PROCESS_FROM_IDX = -30
 PROCESS_TO_IDX   =  30
 
+# ── Rank window (inclusive range for Rank 1/2 detection) ──
+# Values inside window: biggest = Rank 1 (green), 2nd biggest = Rank 2 (yellow)
+# Values outside window: if > Rank 1 = Rank 0 (grey/bahar)
+# PE: rel_idx FROM → TO (descending direction), CE: FROM → TO (ascending)
+RANK_WINDOW_STEP50 = {
+    "pe": {"from": 2, "to": -10},   # PE scans 2,1,0,-1,...,-10
+    "ce": {"from": -2, "to": 10},   # CE scans -2,-1,0,1,...,10
+}
+RANK_WINDOW_STEP100 = {
+    "pe": {"from": 2, "to": -10},   # Same for now — adjust as needed
+    "ce": {"from": -2, "to": 10},   # Same for now — adjust as needed
+}
+
 # *** MASTER BYPASS SWITCH ***
 # True  → Always run, skip market open/close checks (for testing)
 # False → Normal behavior, check market hours
@@ -483,107 +496,63 @@ def _magnitude_unit(value: float) -> int:
     return min(int(math.log10(abs_val) // 3) * 3, 9) // 3
 
 
-def _calculate_single_ranks(values, rel_indices, is_ce):
+def _calculate_single_ranks(values, rel_indices, is_ce, win_from, win_to):
     """
-    Single-pass peak-detection rank calculation.
+    Simple window-based rank calculation.
     
-    Scan starts from ATM side:
-      PE: rel_idx 2→1→0→-1→-2→... (descending from ATM)
-      CE: rel_idx -2→-1→0→1→2→... (ascending from ATM)
+    Window: rel_idx from win_from to win_to (inclusive).
+    - Inside window: biggest value = Rank 1, 2nd biggest = Rank 2
+    - Outside window: any value > Rank 1 = Rank 0 (grey/bahar)
+    - All others: unranked (0)
     
-    Extreme OTM values (|rel_idx|>2 before scan start) are checked AFTER
-    the main scan for Rank 0 (grey) and Rank 2 eligibility.
-    
-    Rank 1 (green): First confirmed peak in scan — value rose then fell.
-    Rank 2 (yellow): 2nd largest value overall (< Rank 1). Can be anywhere.
-    Rank 3 (grey/bahar): Any value > Rank 1 AFTER Rank 1 in scan direction. Multiple possible.
-    Rank 0: Unranked (no special significance).
-    
-    Returns list of rank ints (0/1/2/3).
+    Returns list of rank ints (0=unranked, 1=green/peak, 2=yellow/2nd, 3=grey/bahar).
     """
     n = len(values)
     if n == 0:
         return [0] * n
 
-    # Full scan order (sorted by direction)
-    full_scan = sorted(range(n),
-        key=lambda i: rel_indices[i] if is_ce else -rel_indices[i])
-
-    # Split: scan from ATM side (|rel_idx|<=2 first), then extreme OTM
-    # PE scan: 2,1,0,-1,-2,...,-30 THEN 3,4,5,...,30
-    # CE scan: -2,-1,0,1,2,...,30 THEN -3,-4,-5,...,-30
-    atm_scan = []   # indices from ATM side (main peak detection)
-    otm_scan = []   # indices far from ATM (checked after for grey/rank2)
-    for idx in full_scan:
-        ri = rel_indices[idx]
-        if is_ce:
-            # CE: ascending from -2. Skip rel_idx < -2 (far OTM)
-            if ri < -2:
-                otm_scan.append(idx)
-            else:
-                atm_scan.append(idx)
-        else:
-            # PE: descending from 2. Skip rel_idx > 2 (far OTM)
-            if ri > 2:
-                otm_scan.append(idx)
-            else:
-                atm_scan.append(idx)
-
-    scan_order = atm_scan + otm_scan
-
-    ranks = [0] * n
-    running_max = -1
-    running_max_idx = -1
-    has_risen = False
-    prev_val = -1
-    rank1_found = False
+    # Find Rank 1 and Rank 2 inside the window
     rank1_val = -1
+    rank1_idx = -1
     rank2_val = -1
     rank2_idx = -1
 
-    for pos, idx in enumerate(scan_order):
-        val = max(values[idx], 0)
+    for i in range(n):
+        ri = rel_indices[i]
+        lo = min(win_from, win_to)
+        hi = max(win_from, win_to)
+        if ri < lo or ri > hi:
+            continue
+        val = max(values[i], 0)
+        if val > rank1_val:
+            # Old Rank 1 becomes Rank 2 candidate
+            if rank1_val > rank2_val:
+                rank2_val = rank1_val
+                rank2_idx = rank1_idx
+            rank1_val = val
+            rank1_idx = i
+        elif val > rank2_val and val < rank1_val:
+            rank2_val = val
+            rank2_idx = i
 
-        if not rank1_found:
-            # Phase 1: Searching for Rank 1 (first confirmed peak)
-            if val > running_max:
-                if running_max > rank2_val and running_max > 0:
-                    rank2_val = running_max
-                    rank2_idx = running_max_idx
-                running_max = val
-                running_max_idx = idx
-            elif val < running_max and val > rank2_val:
-                rank2_val = val
-                rank2_idx = idx
+    ranks = [0] * n
 
-            if prev_val >= 0 and val > prev_val:
-                has_risen = True
-
-            if val < running_max and has_risen:
-                rank1_found = True
-                rank1_val = running_max
-                ranks[running_max_idx] = 1  # Green
-                if val > rank2_val and val < rank1_val:
-                    rank2_val = val
-                    rank2_idx = idx
-        else:
-            # Phase 2: After Rank 1 — check grey + update Rank 2
-            if val > rank1_val:
-                ranks[idx] = 3  # Grey/bahar
-            elif val > rank2_val and val < rank1_val:
-                rank2_val = val
-                rank2_idx = idx
-
-        prev_val = val
-
-    # Edge: never declined → last running max is the peak
-    if not rank1_found and running_max > 0:
-        rank1_found = True
-        rank1_val = running_max
-        ranks[running_max_idx] = 1  # Green
-
-    if rank1_found and rank2_idx >= 0:
+    if rank1_idx >= 0:
+        ranks[rank1_idx] = 1  # Green
+    if rank2_idx >= 0:
         ranks[rank2_idx] = 2  # Yellow
+
+    # Rank 0 (grey): outside window and value > Rank 1
+    if rank1_val > 0:
+        for i in range(n):
+            ri = rel_indices[i]
+            lo = min(win_from, win_to)
+            hi = max(win_from, win_to)
+            if ri >= lo and ri <= hi:
+                continue  # inside window, skip
+            val = max(values[i], 0)
+            if val > rank1_val:
+                ranks[i] = 3  # Grey/bahar
 
     return ranks
 
@@ -620,17 +589,13 @@ def short_value(raw: float, unit_code: int) -> str:
     mantissa = round(raw / (1000.0 ** unit_code), 2)
     return f"{mantissa}{UNIT_SUFFIX[unit_code]}"
 
-def calculate_ranks_and_percentages(ois, vols, chngs, rel_indices, is_ce):
+def calculate_ranks_and_percentages(ois, vols, chngs, rel_indices, is_ce, step_size):
     """
-    Rank system v6.1 — OI/vol/chng ranks, same peak-detection algorithm for all.
+    Rank system — window-based, same for OI/vol/chng.
     
-    PE: scan rel_idx 2→1→0→-1→-2→... (descending)
-    CE: scan rel_idx -2→-1→0→1→2→... (ascending)
-    
-    Rank 1 (green): First confirmed peak in scan direction.
-    Rank 2 (yellow): 2nd largest value overall (must be < Rank 1).
-    Rank 3 (grey/bahar): Any value > Rank 1 after Rank 1 in scan. Multiple possible.
-    Rank 0: Unranked.
+    Window range from RANK_WINDOW_STEP50 or RANK_WINDOW_STEP100 based on step_size.
+    Inside window: biggest = Rank 1 (green), 2nd biggest = Rank 2 (yellow).
+    Outside window: value > Rank 1 = Rank 0 (grey/bahar).
     
     OI percentage base = Rank 1's OI (so Rank 1 always = 100%).
     Vol/chng percentage base = global max.
@@ -639,10 +604,16 @@ def calculate_ranks_and_percentages(ois, vols, chngs, rel_indices, is_ce):
     if n == 0:
         return [0]*n, [0]*n, [0]*n, [0.0]*n, [0.0]*n, [0.0]*n
 
+    # Pick window config based on step_size
+    win_cfg = RANK_WINDOW_STEP50 if step_size <= 50 else RANK_WINDOW_STEP100
+    side = "ce" if is_ce else "pe"
+    win_from = win_cfg[side]["from"]
+    win_to   = win_cfg[side]["to"]
+
     # Same algorithm for all 3 metrics
-    oi_ranks  = _calculate_single_ranks(ois, rel_indices, is_ce)
-    vol_ranks = _calculate_single_ranks(vols, rel_indices, is_ce)
-    chng_ranks = _calculate_single_ranks(chngs, rel_indices, is_ce)
+    oi_ranks   = _calculate_single_ranks(ois, rel_indices, is_ce, win_from, win_to)
+    vol_ranks  = _calculate_single_ranks(vols, rel_indices, is_ce, win_from, win_to)
+    chng_ranks = _calculate_single_ranks(chngs, rel_indices, is_ce, win_from, win_to)
 
     # Percentages
     oi_rank1_val = max((ois[i] for i in range(n) if oi_ranks[i] == 1), default=0)
@@ -749,9 +720,9 @@ def _compute_tick_binary(symbol: str, config: dict, payload_data: dict) -> dict 
     # ── Ranks & Percentages ──
     # Returns: oi_ranks, vol_ranks, chng_ranks, oi_pct, vol_pct, chng_pct
     ce_oi_ranks, ce_vol_ranks, ce_chng_ranks, ce_oi_pct, ce_vol_pct, ce_chng_pct = \
-        calculate_ranks_and_percentages(ce_ois, ce_vols, ce_chngs, rel_indices, is_ce=True)
+        calculate_ranks_and_percentages(ce_ois, ce_vols, ce_chngs, rel_indices, is_ce=True, step_size=step_size)
     pe_oi_ranks, pe_vol_ranks, pe_chng_ranks, pe_oi_pct, pe_vol_pct, pe_chng_pct = \
-        calculate_ranks_and_percentages(pe_ois, pe_vols, pe_chngs, rel_indices, is_ce=False)
+        calculate_ranks_and_percentages(pe_ois, pe_vols, pe_chngs, rel_indices, is_ce=False, step_size=step_size)
 
     # ── Magnitude units ──
     ce_oi_u   = [_magnitude_unit(v) for v in ce_ois]
