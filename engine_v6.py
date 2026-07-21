@@ -799,7 +799,16 @@ async def ws_broadcast(symbol: str, packet: bytes):
         if symbol not in sub["symbols"]:
             continue
         try:
-            await ws.send_bytes(packet)
+            f, t = sub["from"], sub["to"]
+            if f <= PROCESS_FROM_IDX and t >= PROCESS_TO_IDX:
+                await ws.send_bytes(packet)
+            else:
+                start = HDR_SIZE + (f - PROCESS_FROM_IDX) * ROW_SIZE
+                end   = HDR_SIZE + (t - PROCESS_FROM_IDX + 1) * ROW_SIZE
+                hdr   = bytearray(packet[:HDR_SIZE])
+                hdr[20] = (t - f + 1) & 0xFF
+                hdr[21] = ((t - f + 1) >> 8) & 0xFF
+                await ws.send_bytes(bytes(hdr) + packet[start:end])
         except Exception:
             dead.append(ws)
     for ws in dead:
@@ -821,11 +830,20 @@ async def _ws_subscribe(ws, data, sub):
         "type": "subscribed", "symbol": symbol,
         "range": {"from": sub["from"], "to": sub["to"]},
     }).decode())
-    # Send latest cached tick (binary)
-    packet = LATEST_TICKS.get(symbol)
-    if packet:
+    # Send latest cached tick (binary), sliced to client's range
+    cached = LATEST_TICKS.get(symbol)
+    if cached:
         try:
-            await ws.send_bytes(packet)
+            f, t = sub["from"], sub["to"]
+            if f <= PROCESS_FROM_IDX and t >= PROCESS_TO_IDX:
+                await ws.send_bytes(cached)
+            else:
+                start = HDR_SIZE + (f - PROCESS_FROM_IDX) * ROW_SIZE
+                end   = HDR_SIZE + (t - PROCESS_FROM_IDX + 1) * ROW_SIZE
+                hdr   = bytearray(cached[:HDR_SIZE])
+                hdr[20] = (t - f + 1) & 0xFF
+                hdr[21] = ((t - f + 1) >> 8) & 0xFF
+                await ws.send_bytes(bytes(hdr) + cached[start:end])
         except Exception:
             pass
 
@@ -840,6 +858,24 @@ async def _ws_set_range(ws, data, sub):
     await ws.send_str(orjson.dumps({
         "type": "range_updated", "range": {"from": sub["from"], "to": sub["to"]},
     }).decode())
+    # Re-send cached tick(s) with new range
+    f, t = sub["from"], sub["to"]
+    for sym in sub["symbols"]:
+        cached = LATEST_TICKS.get(sym)
+        if not cached:
+            continue
+        try:
+            if f <= PROCESS_FROM_IDX and t >= PROCESS_TO_IDX:
+                await ws.send_bytes(cached)
+            else:
+                start = HDR_SIZE + (f - PROCESS_FROM_IDX) * ROW_SIZE
+                end   = HDR_SIZE + (t - PROCESS_FROM_IDX + 1) * ROW_SIZE
+                hdr   = bytearray(cached[:HDR_SIZE])
+                hdr[20] = (t - f + 1) & 0xFF
+                hdr[21] = ((t - f + 1) >> 8) & 0xFF
+                await ws.send_bytes(bytes(hdr) + cached[start:end])
+        except Exception:
+            pass
 
 async def _ws_ping(ws, data, sub):
     await ws.send_str(orjson.dumps({"type": "pong"}).decode())
