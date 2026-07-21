@@ -695,7 +695,7 @@ def _compute_tick_binary(symbol: str, config: dict, payload_data: dict) -> dict 
     step_size  = config["step"]
     step_int   = int(step_size)
     lot_size   = int(payload_data.get("olot", 0))
-    atm_strike = int(round(spot_price / step_size) * step_size)
+    atm_strike = int(spot_price // step_size) * step_int
     sym_id     = config["sym_id"]
     ts_int     = _now_seconds()
     # Time-only string — date is already in DB filename (trading_YYYY-MM-DD.db)
