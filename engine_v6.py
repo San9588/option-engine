@@ -129,13 +129,18 @@ SCHEMA_MAP = orjson.dumps({
         "meta_unpack":     "bitwise: 6 unit_codes (2bit) + 6 ranks (2bit)",
     },
     "meta_pack_layout": {
-        "bits_0_1": "ce_oi_unit  (0='',1='K',2='M',3='B')",
-        "bits_2_3": "ce_chng_unit", "bits_4_5": "ce_vol_unit",
-        "bits_6_7": "pe_oi_unit",   "bits_8_9": "pe_chng_unit",
+        "bits_0_1": "ce_oi_unit    (0='',1='K',2='M',3='B')",
+        "bits_2_3": "ce_chng_unit",
+        "bits_4_5": "ce_vol_unit",
+        "bits_6_7": "pe_oi_unit",
+        "bits_8_9": "pe_chng_unit",
         "bits_10_11": "pe_vol_unit",
-        "bits_12_13": "ce_vol_rank  (0-3)", "bits_14_15": "ce_oi_rank",
-        "bits_16_17": "ce_chng_rank", "bits_18_19": "pe_vol_rank",
-        "bits_20_21": "pe_oi_rank",   "bits_22_23": "pe_chng_rank",
+        "bits_12_13": "ce_oi_rank   (0=unranked,1=green/peak,2=yellow/2nd,3=grey/bahar)",
+        "bits_14_15": "pe_oi_rank   (0=unranked,1=green/peak,2=yellow/2nd,3=grey/bahar)",
+        "bits_16_17": "ce_vol_rank  (0=unranked,1=green/peak,2=yellow/2nd,3=grey/bahar)",
+        "bits_18_19": "pe_vol_rank  (0=unranked,1=green/peak,2=yellow/2nd,3=grey/bahar)",
+        "bits_20_21": "ce_chng_rank (0=unranked,1=green/peak,2=yellow/2nd,3=grey/bahar)",
+        "bits_22_23": "pe_chng_rank (0=unranked,1=green/peak,2=yellow/2nd,3=grey/bahar)",
     },
 })
 
@@ -477,81 +482,159 @@ def _magnitude_unit(value: float) -> int:
         return 0
     return min(int(math.log10(abs_val) // 3) * 3, 9) // 3
 
+
+def _calculate_single_ranks(values, rel_indices, is_ce):
+    """
+    Single-pass peak-detection rank calculation.
+    
+    Scan: PE descends (2→1→0→-1→-2...), CE ascends (-2→-1→0→1→2...)
+    
+    Rank 1 (green): First confirmed peak in scan — value rose then fell.
+    Rank 2 (yellow): 2nd largest value overall (< Rank 1). Can be anywhere.
+    Rank 3 (grey/bahar): Any value > Rank 1 AFTER Rank 1 in scan direction. Multiple possible.
+    Rank 0: Unranked (no special significance).
+    
+    Returns list of rank ints (0/1/2/3).
+    """
+    n = len(values)
+    if n == 0:
+        return [0] * n
+
+    scan_order = sorted(range(n),
+        key=lambda i: rel_indices[i] if is_ce else -rel_indices[i])
+
+    ranks = [0] * n
+    running_max = -1
+    running_max_idx = -1
+    has_risen = False
+    prev_val = -1
+    rank1_found = False
+    rank1_val = -1
+    rank2_val = -1
+    rank2_idx = -1
+
+    for pos, idx in enumerate(scan_order):
+        val = max(values[idx], 0)
+
+        if not rank1_found:
+            # Phase 1: Searching for Rank 1 (first confirmed peak)
+            if val > running_max:
+                if running_max > rank2_val and running_max > 0:
+                    rank2_val = running_max
+                    rank2_idx = running_max_idx
+                running_max = val
+                running_max_idx = idx
+            elif val < running_max and val > rank2_val:
+                rank2_val = val
+                rank2_idx = idx
+
+            if prev_val >= 0 and val > prev_val:
+                has_risen = True
+
+            if val < running_max and has_risen:
+                rank1_found = True
+                rank1_val = running_max
+                ranks[running_max_idx] = 1  # Green
+                if val > rank2_val and val < rank1_val:
+                    rank2_val = val
+                    rank2_idx = idx
+        else:
+            # Phase 2: After Rank 1 — check grey + update Rank 2
+            if val > rank1_val:
+                ranks[idx] = 3  # Grey/bahar
+            elif val > rank2_val and val < rank1_val:
+                rank2_val = val
+                rank2_idx = idx
+
+        prev_val = val
+
+    # Edge: never declined → last running max is the peak
+    if not rank1_found and running_max > 0:
+        rank1_found = True
+        rank1_val = running_max
+        ranks[running_max_idx] = 1  # Green
+
+    if rank1_found and rank2_idx >= 0:
+        ranks[rank2_idx] = 2  # Yellow
+
+    return ranks
+
+
 def _pack_meta_row(ce_oi_u, ce_chng_u, ce_vol_u, pe_oi_u, pe_chng_u, pe_vol_u,
-                   ce_v_rank, ce_o_rank, ce_c_rank, pe_v_rank, pe_o_rank, pe_c_rank) -> int:
+                   ce_oi_rank, pe_oi_rank, ce_vol_rank, pe_vol_rank,
+                   ce_chng_rank, pe_chng_rank) -> int:
+    """Bit-pack 6 unit-codes (2bit each) + 6 ranks (2bit each)."""
     return (
         ce_oi_u | (ce_chng_u << 2) | (ce_vol_u << 4)
         | (pe_oi_u << 6) | (pe_chng_u << 8) | (pe_vol_u << 10)
-        | (ce_v_rank << 12) | (ce_o_rank << 14) | (ce_c_rank << 16)
-        | (pe_v_rank << 18) | (pe_o_rank << 20) | (pe_c_rank << 22)
+        | (ce_oi_rank << 12) | (pe_oi_rank << 14)
+        | (ce_vol_rank << 16) | (pe_vol_rank << 18)
+        | (ce_chng_rank << 20) | (pe_chng_rank << 22)
     )
 
 def _unpack_meta(pack: int) -> dict:
     return {
-        "ce_oi_unit":   UNIT_SUFFIX[pack & 0b11],
-        "ce_chng_unit": UNIT_SUFFIX[(pack >> 2) & 0b11],
-        "ce_vol_unit":  UNIT_SUFFIX[(pack >> 4) & 0b11],
-        "pe_oi_unit":   UNIT_SUFFIX[(pack >> 6) & 0b11],
-        "pe_chng_unit": UNIT_SUFFIX[(pack >> 8) & 0b11],
-        "pe_vol_unit":  UNIT_SUFFIX[(pack >> 10) & 0b11],
-        "ce_vol_rank":  (pack >> 12) & 0b11,
-        "ce_oi_rank":   (pack >> 14) & 0b11,
-        "ce_chng_rank": (pack >> 16) & 0b11,
-        "pe_vol_rank":  (pack >> 18) & 0b11,
-        "pe_oi_rank":   (pack >> 20) & 0b11,
-        "pe_chng_rank": (pack >> 22) & 0b11,
+        "ce_oi_unit":    UNIT_SUFFIX[pack & 0b11],
+        "ce_chng_unit":  UNIT_SUFFIX[(pack >> 2) & 0b11],
+        "ce_vol_unit":   UNIT_SUFFIX[(pack >> 4) & 0b11],
+        "pe_oi_unit":    UNIT_SUFFIX[(pack >> 6) & 0b11],
+        "pe_chng_unit":  UNIT_SUFFIX[(pack >> 8) & 0b11],
+        "pe_vol_unit":   UNIT_SUFFIX[(pack >> 10) & 0b11],
+        "ce_oi_rank":    (pack >> 12) & 0b11,
+        "pe_oi_rank":    (pack >> 14) & 0b11,
+        "ce_vol_rank":   (pack >> 16) & 0b11,
+        "pe_vol_rank":   (pack >> 18) & 0b11,
+        "ce_chng_rank":  (pack >> 20) & 0b11,
+        "pe_chng_rank":  (pack >> 22) & 0b11,
     }
 
 def short_value(raw: float, unit_code: int) -> str:
     mantissa = round(raw / (1000.0 ** unit_code), 2)
     return f"{mantissa}{UNIT_SUFFIX[unit_code]}"
 
-def calculate_ranks_and_percentages(strikes, vols, ois, chngs, atm_strike, step_size, is_ce):
-    n = len(strikes)
+def calculate_ranks_and_percentages(ois, vols, chngs, rel_indices, is_ce):
+    """
+    Rank system v6.1 — OI/vol/chng ranks, same peak-detection algorithm for all.
+    
+    PE: scan rel_idx 2→1→0→-1→-2→... (descending)
+    CE: scan rel_idx -2→-1→0→1→2→... (ascending)
+    
+    Rank 1 (green): First confirmed peak in scan direction.
+    Rank 2 (yellow): 2nd largest value overall (must be < Rank 1).
+    Rank 3 (grey/bahar): Any value > Rank 1 after Rank 1 in scan. Multiple possible.
+    Rank 0: Unranked.
+    
+    OI percentage base = Rank 1's OI (so Rank 1 always = 100%).
+    Vol/chng percentage base = global max.
+    """
+    n = len(ois)
     if n == 0:
-        empty = []
-        return empty, empty, empty, empty, empty, empty
+        return [0]*n, [0]*n, [0]*n, [0.0]*n, [0.0]*n, [0.0]*n
 
-    offsets = [(s - atm_strike) / step_size for s in strikes]
-    if is_ce:
-        window_mask = [-2 <= o <= 15 for o in offsets]
-        deep_itm = [o < -2 for o in offsets]
+    # Same algorithm for all 3 metrics
+    oi_ranks  = _calculate_single_ranks(ois, rel_indices, is_ce)
+    vol_ranks = _calculate_single_ranks(vols, rel_indices, is_ce)
+    chng_ranks = _calculate_single_ranks(chngs, rel_indices, is_ce)
+
+    # Percentages
+    oi_rank1_val = max((ois[i] for i in range(n) if oi_ranks[i] == 1), default=0)
+    if oi_rank1_val > 0:
+        inv_oi = 100.0 / oi_rank1_val
+        oi_pcts = [round(ois[i] * inv_oi, 1) for i in range(n)]
     else:
-        window_mask = [-15 <= o <= 2 for o in offsets]
-        deep_itm = [o > 2 for o in offsets]
+        mx = max(ois) if ois else 0
+        oi_pcts = [round(ois[i] * 100.0 / mx, 1) for i in range(n)] if mx > 0 else [0.0]*n
 
-    def compute_pct(arr):
-        max_val = max(arr) if arr else 0
-        if max_val <= 0:
-            return [0.0] * n, max_val
-        inv = 100.0 / max_val
-        return [round(v * inv, 1) for v in arr], max_val
+    def _pct(arr):
+        mx = max(arr) if arr else 0
+        if mx <= 0: return [0.0] * n
+        inv = 100.0 / mx
+        return [round(v * inv, 1) for v in arr]
 
-    vol_pcts, max_vol = compute_pct(vols)
-    oi_pcts, max_oi = compute_pct(ois)
-    chng_pcts, max_chng = compute_pct(chngs)
+    vol_pcts  = _pct(vols)
+    chng_pcts = _pct(chngs)
 
-    def compute_ranks(arr, max_val, mask, itm):
-        ranks = [0] * n
-        if max_val == 0:
-            return ranks
-        global_max_idx = arr.index(max_val)
-        if itm[global_max_idx]:
-            ranks[global_max_idx] = 3
-        window_items = [(i, arr[i]) for i in range(n) if mask[i] and arr[i] > 0]
-        window_items.sort(key=lambda x: x[1], reverse=True)
-        rank = 1
-        for idx, val in window_items[:3]:
-            if ranks[idx] == 0:
-                ranks[idx] = rank
-                rank += 1
-        return ranks
-
-    v_ranks = compute_ranks(vols, max_vol, window_mask, deep_itm)
-    o_ranks = compute_ranks(ois, max_oi, window_mask, deep_itm)
-    c_ranks = compute_ranks(chngs, max_chng, window_mask, deep_itm)
-
-    return v_ranks, o_ranks, c_ranks, vol_pcts, oi_pcts, chng_pcts
+    return oi_ranks, vol_ranks, chng_ranks, oi_pcts, vol_pcts, chng_pcts
 
 
 # ====================================================================
@@ -636,10 +719,11 @@ def _compute_tick_binary(symbol: str, config: dict, payload_data: dict) -> dict 
      gammas) = zip(*raw)
 
     # ── Ranks & Percentages ──
-    ce_v_rank, ce_o_rank, ce_c_rank, ce_vol_pct, ce_oi_pct, ce_chng_pct = \
-        calculate_ranks_and_percentages(strikes, ce_vols, ce_ois, ce_chngs, atm_strike, step_size, is_ce=True)
-    pe_v_rank, pe_o_rank, pe_c_rank, pe_vol_pct, pe_oi_pct, pe_chng_pct = \
-        calculate_ranks_and_percentages(strikes, pe_vols, pe_ois, pe_chngs, atm_strike, step_size, is_ce=False)
+    # Returns: oi_ranks, vol_ranks, chng_ranks, oi_pct, vol_pct, chng_pct
+    ce_oi_ranks, ce_vol_ranks, ce_chng_ranks, ce_oi_pct, ce_vol_pct, ce_chng_pct = \
+        calculate_ranks_and_percentages(ce_ois, ce_vols, ce_chngs, rel_indices, is_ce=True)
+    pe_oi_ranks, pe_vol_ranks, pe_chng_ranks, pe_oi_pct, pe_vol_pct, pe_chng_pct = \
+        calculate_ranks_and_percentages(pe_ois, pe_vols, pe_chngs, rel_indices, is_ce=False)
 
     # ── Magnitude units ──
     ce_oi_u   = [_magnitude_unit(v) for v in ce_ois]
@@ -660,8 +744,9 @@ def _compute_tick_binary(symbol: str, config: dict, payload_data: dict) -> dict 
         meta = _pack_meta_row(
             ce_oi_u[i], ce_chng_u[i], ce_vol_u[i],
             pe_oi_u[i], pe_chng_u[i], pe_vol_u[i],
-            ce_v_rank[i], ce_o_rank[i], ce_c_rank[i],
-            pe_v_rank[i], pe_o_rank[i], pe_c_rank[i],
+            ce_oi_ranks[i], pe_oi_ranks[i],
+            ce_vol_ranks[i], pe_vol_ranks[i],
+            ce_chng_ranks[i], pe_chng_ranks[i],
         )
         strike_val = strikes[i]
         # Clamp fields to valid range (defense-in-depth)
