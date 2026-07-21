@@ -487,7 +487,12 @@ def _calculate_single_ranks(values, rel_indices, is_ce):
     """
     Single-pass peak-detection rank calculation.
     
-    Scan: PE descends (2→1→0→-1→-2...), CE ascends (-2→-1→0→1→2...)
+    Scan starts from ATM side:
+      PE: rel_idx 2→1→0→-1→-2→... (descending from ATM)
+      CE: rel_idx -2→-1→0→1→2→... (ascending from ATM)
+    
+    Extreme OTM values (|rel_idx|>2 before scan start) are checked AFTER
+    the main scan for Rank 0 (grey) and Rank 2 eligibility.
     
     Rank 1 (green): First confirmed peak in scan — value rose then fell.
     Rank 2 (yellow): 2nd largest value overall (< Rank 1). Can be anywhere.
@@ -500,8 +505,31 @@ def _calculate_single_ranks(values, rel_indices, is_ce):
     if n == 0:
         return [0] * n
 
-    scan_order = sorted(range(n),
+    # Full scan order (sorted by direction)
+    full_scan = sorted(range(n),
         key=lambda i: rel_indices[i] if is_ce else -rel_indices[i])
+
+    # Split: scan from ATM side (|rel_idx|<=2 first), then extreme OTM
+    # PE scan: 2,1,0,-1,-2,...,-30 THEN 3,4,5,...,30
+    # CE scan: -2,-1,0,1,2,...,30 THEN -3,-4,-5,...,-30
+    atm_scan = []   # indices from ATM side (main peak detection)
+    otm_scan = []   # indices far from ATM (checked after for grey/rank2)
+    for idx in full_scan:
+        ri = rel_indices[idx]
+        if is_ce:
+            # CE: ascending from -2. Skip rel_idx < -2 (far OTM)
+            if ri < -2:
+                otm_scan.append(idx)
+            else:
+                atm_scan.append(idx)
+        else:
+            # PE: descending from 2. Skip rel_idx > 2 (far OTM)
+            if ri > 2:
+                otm_scan.append(idx)
+            else:
+                atm_scan.append(idx)
+
+    scan_order = atm_scan + otm_scan
 
     ranks = [0] * n
     running_max = -1
